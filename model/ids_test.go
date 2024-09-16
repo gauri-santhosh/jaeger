@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2018 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package model_test
 
@@ -95,7 +84,7 @@ func TestSpanIDFromBytes(t *testing.T) {
 	for _, data := range errTests {
 		_, err := model.SpanIDFromBytes(data)
 		require.Error(t, err)
-		assert.Equal(t, err.Error(), "invalid length for SpanID")
+		require.EqualError(t, err, "invalid length for SpanID")
 	}
 
 	spanID, err := model.SpanIDFromBytes([]byte{0, 0, 0, 0, 0, 0, 0, 13})
@@ -112,7 +101,7 @@ func TestTraceIDFromBytes(t *testing.T) {
 	for _, data := range errTests {
 		_, err := model.TraceIDFromBytes(data)
 		require.Error(t, err)
-		assert.Equal(t, err.Error(), "invalid length for TraceID")
+		assert.Equal(t, "invalid length for TraceID", err.Error())
 	}
 
 	tests := []struct {
@@ -125,6 +114,6 @@ func TestTraceIDFromBytes(t *testing.T) {
 	for _, test := range tests {
 		traceID, err := model.TraceIDFromBytes(test.data)
 		require.NoError(t, err)
-		assert.Equal(t, traceID, test.expected)
+		assert.Equal(t, test.expected, traceID)
 	}
 }

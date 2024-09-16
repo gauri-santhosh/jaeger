@@ -1,16 +1,5 @@
 // Copyright (c) 2022 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package shared
 
@@ -19,8 +8,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -51,21 +40,21 @@ func TestStreamClientWriteSpan(t *testing.T) {
 			On("WriteSpanStream", mock.Anything).Return(stream, nil)
 
 		err := r.client.WriteSpan(context.Background(), &mockTraceSpans[0])
-		assert.ErrorContains(t, err, "timeout")
+		require.ErrorContains(t, err, "timeout")
 		err = r.client.WriteSpan(context.Background(), &mockTraceSpans[0])
-		assert.ErrorContains(t, err, "EOF")
+		require.ErrorContains(t, err, "EOF")
 		err = r.client.WriteSpan(context.Background(), &mockTraceSpans[0])
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		err = r.client.WriteSpan(context.Background(), &mockTraceSpans[0]) // get stream from pool should succeed
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		stream.On("CloseAndRecv").Return(nil, status.Error(codes.DeadlineExceeded, "timeout"))
 		for i := 0; i < defaultMaxPoolSize; i++ { // putStream when pool is full should call CloseAndRecv
 			err = r.client.putStream(stream)
 			if i == defaultMaxPoolSize-1 {
-				assert.ErrorContains(t, err, "timeout", i)
+				require.ErrorContains(t, err, "timeout", i)
 			} else {
-				assert.NoError(t, err, i)
+				require.NoError(t, err, i)
 			}
 		}
 	})
@@ -78,12 +67,12 @@ func TestStreamClientClose(t *testing.T) {
 		r.client.streamPool <- stream
 
 		err := r.client.Close()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		err = r.client.Close()
-		assert.ErrorContains(t, err, "already closed")
+		require.ErrorContains(t, err, "already closed")
 
 		err = r.client.WriteSpan(context.Background(), &mockTraceSpans[0]) // getStream from pool should fail when closed
-		assert.ErrorContains(t, err, "closed")
+		require.ErrorContains(t, err, "closed")
 	})
 }
 
@@ -94,8 +83,8 @@ func TestStreamClientCloseFail(t *testing.T) {
 		r.client.streamPool <- stream
 
 		err := r.client.Close()
-		assert.ErrorContains(t, err, "timeout")
+		require.ErrorContains(t, err, "timeout")
 		err = r.client.putStream(stream)
-		assert.ErrorContains(t, err, "timeout") // putStream after closed should call CloseAndRecv
+		require.ErrorContains(t, err, "timeout") // putStream after closed should call CloseAndRecv
 	})
 }

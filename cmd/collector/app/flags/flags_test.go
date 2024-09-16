@@ -1,16 +1,5 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package flags
 
@@ -23,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/pkg/config"
+	"github.com/jaegertracing/jaeger/pkg/testutils"
 )
 
 func TestCollectorOptionsWithFlags_CheckHostPort(t *testing.T) {
@@ -81,6 +71,35 @@ func TestCollectorOptionsWithFailedTLSFlags(t *testing.T) {
 	}
 }
 
+func TestCollectorOptionsWithFlags_CheckTLSReloadInterval(t *testing.T) {
+	prefixes := []string{
+		"--collector.http",
+		"--collector.grpc",
+		"--collector.zipkin",
+		"--collector.otlp.http",
+		"--collector.otlp.grpc",
+	}
+	otlpPrefixes := map[string]struct{}{
+		"--collector.otlp.http": {},
+		"--collector.otlp.grpc": {},
+	}
+	for _, prefix := range prefixes {
+		t.Run(prefix, func(t *testing.T) {
+			_, command := config.Viperize(AddFlags)
+			err := command.ParseFlags([]string{
+				prefix + ".tls.enabled=true",
+				prefix + ".tls.reload-interval=24h",
+			})
+			if _, ok := otlpPrefixes[prefix]; !ok {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unknown flag")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestCollectorOptionsWithFlags_CheckMaxReceiveMessageLength(t *testing.T) {
 	c := &CollectorOptions{}
 	v, command := config.Viperize(AddFlags)
@@ -119,7 +138,7 @@ func TestCollectorOptionsWithFlags_CheckNoTenancy(t *testing.T) {
 	command.ParseFlags([]string{})
 	c.InitFromViper(v, zap.NewNop())
 
-	assert.Equal(t, false, c.GRPC.Tenancy.Enabled)
+	assert.False(t, c.GRPC.Tenancy.Enabled)
 }
 
 func TestCollectorOptionsWithFlags_CheckSimpleTenancy(t *testing.T) {
@@ -130,7 +149,7 @@ func TestCollectorOptionsWithFlags_CheckSimpleTenancy(t *testing.T) {
 	})
 	c.InitFromViper(v, zap.NewNop())
 
-	assert.Equal(t, true, c.GRPC.Tenancy.Enabled)
+	assert.True(t, c.GRPC.Tenancy.Enabled)
 	assert.Equal(t, "x-tenant", c.GRPC.Tenancy.Header)
 }
 
@@ -144,7 +163,22 @@ func TestCollectorOptionsWithFlags_CheckFullTenancy(t *testing.T) {
 	})
 	c.InitFromViper(v, zap.NewNop())
 
-	assert.Equal(t, true, c.GRPC.Tenancy.Enabled)
+	assert.True(t, c.GRPC.Tenancy.Enabled)
 	assert.Equal(t, "custom-tenant-header", c.GRPC.Tenancy.Header)
 	assert.Equal(t, []string{"acme", "hardware-store"}, c.GRPC.Tenancy.Tenants)
+}
+
+func TestCollectorOptionsWithFlags_CheckZipkinKeepAlive(t *testing.T) {
+	c := &CollectorOptions{}
+	v, command := config.Viperize(AddFlags)
+	command.ParseFlags([]string{
+		"--collector.zipkin.keep-alive=false",
+	})
+	c.InitFromViper(v, zap.NewNop())
+
+	assert.False(t, c.Zipkin.KeepAlive)
+}
+
+func TestMain(m *testing.M) {
+	testutils.VerifyGoLeaks(m)
 }

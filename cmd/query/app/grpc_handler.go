@@ -1,16 +1,5 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -19,7 +8,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,6 +15,7 @@ import (
 	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
 	"github.com/jaegertracing/jaeger/model"
 	_ "github.com/jaegertracing/jaeger/pkg/gogocodec" // force gogo codec registration
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
 	"github.com/jaegertracing/jaeger/plugin/metrics/disabled"
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2"
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2/metrics"
@@ -53,8 +42,41 @@ type GRPCHandler struct {
 	queryService        *querysvc.QueryService
 	metricsQueryService querysvc.MetricsQueryService
 	logger              *zap.Logger
-	tracer              opentracing.Tracer
+	tracer              *jtracer.JTracer
 	nowFn               func() time.Time
+}
+
+// GRPCHandlerOptions contains optional members of GRPCHandler.
+type GRPCHandlerOptions struct {
+	Logger *zap.Logger
+	Tracer *jtracer.JTracer
+	NowFn  func() time.Time
+}
+
+// NewGRPCHandler returns a GRPCHandler.
+func NewGRPCHandler(queryService *querysvc.QueryService,
+	metricsQueryService querysvc.MetricsQueryService,
+	options GRPCHandlerOptions,
+) *GRPCHandler {
+	if options.Logger == nil {
+		options.Logger = zap.NewNop()
+	}
+
+	if options.Tracer == nil {
+		options.Tracer = jtracer.NoOp()
+	}
+
+	if options.NowFn == nil {
+		options.NowFn = time.Now
+	}
+
+	return &GRPCHandler{
+		queryService:        queryService,
+		metricsQueryService: metricsQueryService,
+		logger:              options.Logger,
+		tracer:              options.Tracer,
+		nowFn:               options.NowFn,
+	}
 }
 
 var _ api_v2.QueryServiceServer = (*GRPCHandler)(nil)
@@ -68,8 +90,8 @@ func (g *GRPCHandler) GetTrace(r *api_v2.GetTraceRequest, stream api_v2.QuerySer
 		return errUninitializedTraceID
 	}
 	trace, err := g.queryService.GetTrace(stream.Context(), r.TraceID)
-	if err == spanstore.ErrTraceNotFound {
-		g.logger.Error(msgTraceNotFound, zap.Error(err))
+	if errors.Is(err, spanstore.ErrTraceNotFound) {
+		g.logger.Warn(msgTraceNotFound, zap.Stringer("id", r.TraceID), zap.Error(err))
 		return status.Errorf(codes.NotFound, "%s: %v", msgTraceNotFound, err)
 	}
 	if err != nil {
@@ -88,8 +110,8 @@ func (g *GRPCHandler) ArchiveTrace(ctx context.Context, r *api_v2.ArchiveTraceRe
 		return nil, errUninitializedTraceID
 	}
 	err := g.queryService.ArchiveTrace(ctx, r.TraceID)
-	if err == spanstore.ErrTraceNotFound {
-		g.logger.Error("trace not found", zap.Error(err))
+	if errors.Is(err, spanstore.ErrTraceNotFound) {
+		g.logger.Warn(msgTraceNotFound, zap.Stringer("id", r.TraceID), zap.Error(err))
 		return nil, status.Errorf(codes.NotFound, "%s: %v", msgTraceNotFound, err)
 	}
 	if err != nil {
@@ -148,7 +170,7 @@ func (g *GRPCHandler) sendSpanChunks(spans []*model.Span, sendFn func(*api_v2.Sp
 }
 
 // GetServices is the gRPC handler to fetch services.
-func (g *GRPCHandler) GetServices(ctx context.Context, r *api_v2.GetServicesRequest) (*api_v2.GetServicesResponse, error) {
+func (g *GRPCHandler) GetServices(ctx context.Context, _ *api_v2.GetServicesRequest) (*api_v2.GetServicesResponse, error) {
 	services, err := g.queryService.GetServices(ctx)
 	if err != nil {
 		g.logger.Error("failed to fetch services", zap.Error(err))
@@ -290,7 +312,7 @@ func (g *GRPCHandler) handleErr(msg string, err error) error {
 	return status.Errorf(codes.Internal, "%s: %v", msg, err)
 }
 
-func (g *GRPCHandler) newBaseQueryParameters(r interface{}) (bqp metricsstore.BaseQueryParameters, err error) {
+func (g *GRPCHandler) newBaseQueryParameters(r any) (bqp metricsstore.BaseQueryParameters, err error) {
 	if r == nil {
 		return bqp, errNilRequest
 	}

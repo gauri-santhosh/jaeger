@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2018 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dbmodel
 
@@ -63,7 +52,7 @@ func loadFixtures(t *testing.T, i int) ([]byte, []byte) {
 	return inStr, outStr
 }
 
-func testJSONEncoding(t *testing.T, i int, expectedStr []byte, object interface{}) {
+func testJSONEncoding(t *testing.T, i int, expectedStr []byte, object any) {
 	buf := &bytes.Buffer{}
 	enc := json.NewEncoder(buf)
 	enc.SetIndent("", "  ")
@@ -73,7 +62,7 @@ func testJSONEncoding(t *testing.T, i int, expectedStr []byte, object interface{
 
 	if !assert.Equal(t, string(expectedStr), buf.String()) {
 		err := os.WriteFile(outFile+"-actual.json", buf.Bytes(), 0o644)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	}
 }
 
@@ -82,8 +71,8 @@ func TestEmptyTags(t *testing.T) {
 	span := model.Span{Tags: tags, Process: &model.Process{Tags: tags}}
 	converter := NewFromDomain(false, nil, ":")
 	dbSpan := converter.FromDomainEmbedProcess(&span)
-	assert.Equal(t, 0, len(dbSpan.Tags))
-	assert.Equal(t, 0, len(dbSpan.Tag))
+	assert.Empty(t, dbSpan.Tags)
+	assert.Empty(t, dbSpan.Tag)
 }
 
 func TestTagMap(t *testing.T) {
@@ -96,12 +85,12 @@ func TestTagMap(t *testing.T) {
 	converter := NewFromDomain(false, []string{"a", "b.b", "b*"}, ":")
 	dbSpan := converter.FromDomainEmbedProcess(&span)
 
-	assert.Equal(t, 1, len(dbSpan.Tags))
+	assert.Len(t, dbSpan.Tags, 1)
 	assert.Equal(t, "foo", dbSpan.Tags[0].Key)
-	assert.Equal(t, 1, len(dbSpan.Process.Tags))
+	assert.Len(t, dbSpan.Process.Tags, 1)
 	assert.Equal(t, "foo", dbSpan.Process.Tags[0].Key)
 
-	tagsMap := map[string]interface{}{}
+	tagsMap := map[string]any{}
 	tagsMap["a"] = true
 	tagsMap["b:b"] = int64(1)
 	assert.Equal(t, tagsMap, dbSpan.Tag)

@@ -1,30 +1,22 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
 import (
 	"fmt"
 	"net"
+	"sync"
 
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
-	"github.com/jaegertracing/jaeger/pkg/healthcheck"
+	"github.com/jaegertracing/jaeger/pkg/telemetery"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
 	"github.com/jaegertracing/jaeger/storage"
@@ -34,31 +26,30 @@ import (
 
 // Server runs a gRPC server
 type Server struct {
-	logger *zap.Logger
-	opts   *Options
+	opts *Options
 
-	grpcConn           net.Listener
-	grpcServer         *grpc.Server
-	unavailableChannel chan healthcheck.Status // used to signal to admin server that gRPC server is unavailable
+	grpcConn   net.Listener
+	grpcServer *grpc.Server
+	wg         sync.WaitGroup
+	telemetery.Setting
 }
 
 // NewServer creates and initializes Server.
-func NewServer(options *Options, storageFactory storage.Factory, tm *tenancy.Manager, logger *zap.Logger) (*Server, error) {
-	handler, err := createGRPCHandler(storageFactory, logger)
+func NewServer(options *Options, storageFactory storage.Factory, tm *tenancy.Manager, telset telemetery.Setting) (*Server, error) {
+	handler, err := createGRPCHandler(storageFactory, telset.Logger)
 	if err != nil {
 		return nil, err
 	}
 
-	grpcServer, err := createGRPCServer(options, tm, handler, logger)
+	grpcServer, err := createGRPCServer(options, tm, handler, telset.Logger)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Server{
-		logger:             logger,
-		opts:               options,
-		grpcServer:         grpcServer,
-		unavailableChannel: make(chan healthcheck.Status),
+		opts:       options,
+		grpcServer: grpcServer,
+		Setting:    telset,
 	}, nil
 }
 
@@ -94,11 +85,6 @@ func createGRPCHandler(f storage.Factory, logger *zap.Logger) (*shared.GRPCHandl
 	return handler, nil
 }
 
-// HealthCheckStatus returns health check status channel a client can subscribe to
-func (s Server) HealthCheckStatus() chan healthcheck.Status {
-	return s.unavailableChannel
-}
-
 func createGRPCServer(opts *Options, tm *tenancy.Manager, handler *shared.GRPCHandler, logger *zap.Logger) (*grpc.Server, error) {
 	var grpcOpts []grpc.ServerOption
 
@@ -118,8 +104,9 @@ func createGRPCServer(opts *Options, tm *tenancy.Manager, handler *shared.GRPCHa
 	}
 
 	server := grpc.NewServer(grpcOpts...)
+	healthServer := health.NewServer()
 	reflection.Register(server)
-	handler.Register(server)
+	handler.Register(server, healthServer)
 
 	return server, nil
 }
@@ -130,13 +117,15 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	s.logger.Info("Starting GRPC server", zap.Stringer("addr", listener.Addr()))
+	s.Logger.Info("Starting GRPC server", zap.Stringer("addr", listener.Addr()))
 	s.grpcConn = listener
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		if err := s.grpcServer.Serve(s.grpcConn); err != nil {
-			s.logger.Error("GRPC server exited", zap.Error(err))
+			s.Logger.Error("GRPC server exited", zap.Error(err))
+			s.ReportStatus(componentstatus.NewFatalErrorEvent(err))
 		}
-		s.unavailableChannel <- healthcheck.Unavailable
 	}()
 
 	return nil
@@ -147,5 +136,7 @@ func (s *Server) Close() error {
 	s.grpcServer.Stop()
 	s.grpcConn.Close()
 	s.opts.TLSGRPC.Close()
+	s.wg.Wait()
+	s.ReportStatus(componentstatus.NewEvent(componentstatus.StatusStopped))
 	return nil
 }

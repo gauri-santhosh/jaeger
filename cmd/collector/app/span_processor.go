@@ -1,26 +1,15 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/processor"
@@ -54,8 +43,8 @@ type spanProcessor struct {
 	collectorTags      map[string]string
 	dynQueueSizeWarmup uint
 	dynQueueSizeMemory uint
-	bytesProcessed     *atomic.Uint64
-	spansProcessed     *atomic.Uint64
+	bytesProcessed     atomic.Uint64
+	spansProcessed     atomic.Uint64
 	stopCh             chan struct{}
 }
 
@@ -73,7 +62,7 @@ func NewSpanProcessor(
 ) processor.SpanProcessor {
 	sp := newSpanProcessor(spanWriter, additional, opts...)
 
-	sp.queue.StartConsumers(sp.numWorkers, func(item interface{}) {
+	sp.queue.StartConsumers(sp.numWorkers, func(item any) {
 		value := item.(*queueItem)
 		sp.processItemFromQueue(value)
 	})
@@ -93,8 +82,11 @@ func newSpanProcessor(spanWriter spanstore.Writer, additional []ProcessSpan, opt
 		options.serviceMetrics,
 		options.hostMetrics,
 		options.extraFormatTypes)
-	droppedItemHandler := func(item interface{}) {
+	droppedItemHandler := func(item any) {
 		handlerMetrics.SpansDropped.Inc(1)
+		if options.onDroppedSpan != nil {
+			options.onDroppedSpan(item.(*queueItem).span)
+		}
 	}
 	boundedQueue := queue.NewBoundedQueue(options.queueSize, droppedItemHandler)
 
@@ -117,8 +109,6 @@ func newSpanProcessor(spanWriter spanstore.Writer, additional []ProcessSpan, opt
 		stopCh:             make(chan struct{}),
 		dynQueueSizeMemory: options.dynQueueSizeMemory,
 		dynQueueSizeWarmup: options.dynQueueSizeWarmup,
-		bytesProcessed:     atomic.NewUint64(0),
-		spansProcessed:     atomic.NewUint64(0),
 	}
 
 	processSpanFuncs := []ProcessSpan{options.preSave, sp.saveSpan}
@@ -168,9 +158,10 @@ func (sp *spanProcessor) saveSpan(span *model.Span, tenant string) {
 	sp.metrics.SaveLatency.Record(time.Since(startTime))
 }
 
-func (sp *spanProcessor) countSpan(span *model.Span, tenant string) {
+func (sp *spanProcessor) countSpan(span *model.Span, _ string /* tenant */) {
+	//nolint: gosec // G115
 	sp.bytesProcessed.Add(uint64(span.Size()))
-	sp.spansProcessed.Inc()
+	sp.spansProcessed.Add(1)
 }
 
 func (sp *spanProcessor) ProcessSpans(mSpans []*model.Span, options processor.SpansOptions) ([]bool, error) {
@@ -304,6 +295,7 @@ func (sp *spanProcessor) updateQueueSize() {
 }
 
 func (sp *spanProcessor) updateGauges() {
+	//nolint: gosec // G115
 	sp.metrics.SpansBytes.Update(int64(sp.bytesProcessed.Load()))
 	sp.metrics.QueueLength.Update(int64(sp.queue.Size()))
 	sp.metrics.QueueCapacity.Update(int64(sp.queue.Capacity()))

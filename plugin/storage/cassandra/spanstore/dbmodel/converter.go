@@ -1,24 +1,19 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dbmodel
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jaegertracing/jaeger/model"
+)
+
+const (
+	// warningStringPrefix is a magic string prefix for tag names to store span warnings.
+	warningStringPrefix = "$$span.warning."
 )
 
 var (
@@ -57,11 +52,15 @@ type converter struct{}
 
 func (c converter) fromDomain(span *model.Span) *Span {
 	tags := c.toDBTags(span.Tags)
+	warnings := c.toDBWarnings(span.Warnings)
 	logs := c.toDBLogs(span.Logs)
 	refs := c.toDBRefs(span.References)
 	udtProcess := c.toDBProcess(span.Process)
 	spanHash, _ := model.HashCode(span)
 
+	tags = append(tags, warnings...)
+
+	//nolint: gosec // G115
 	return &Span{
 		TraceID:       TraceIDFromDomain(span.TraceID),
 		SpanID:        int64(span.SpanID),
@@ -83,6 +82,10 @@ func (c converter) toDomain(dbSpan *Span) (*model.Span, error) {
 	if err != nil {
 		return nil, err
 	}
+	warnings, err := c.fromDBWarnings(dbSpan.Tags)
+	if err != nil {
+		return nil, err
+	}
 	logs, err := c.fromDBLogs(dbSpan.Logs)
 	if err != nil {
 		return nil, err
@@ -97,33 +100,57 @@ func (c converter) toDomain(dbSpan *Span) (*model.Span, error) {
 	}
 	traceID := dbSpan.TraceID.ToDomain()
 	span := &model.Span{
-		TraceID:       traceID,
+		TraceID: traceID,
+		//nolint: gosec // G115
 		SpanID:        model.NewSpanID(uint64(dbSpan.SpanID)),
 		OperationName: dbSpan.OperationName,
-		References:    model.MaybeAddParentSpanID(traceID, model.NewSpanID(uint64(dbSpan.ParentID)), refs),
-		Flags:         model.Flags(uint32(dbSpan.Flags)),
-		StartTime:     model.EpochMicrosecondsAsTime(uint64(dbSpan.StartTime)),
-		Duration:      model.MicrosecondsAsDuration(uint64(dbSpan.Duration)),
-		Tags:          tags,
-		Logs:          logs,
-		Process:       process,
+		//nolint: gosec // G115
+		References: model.MaybeAddParentSpanID(traceID, model.NewSpanID(uint64(dbSpan.ParentID)), refs),
+		//nolint: gosec // G115
+		Flags: model.Flags(uint32(dbSpan.Flags)),
+		//nolint: gosec // G115
+		StartTime: model.EpochMicrosecondsAsTime(uint64(dbSpan.StartTime)),
+		//nolint: gosec // G115
+		Duration: model.MicrosecondsAsDuration(uint64(dbSpan.Duration)),
+		Tags:     tags,
+		Warnings: warnings,
+		Logs:     logs,
+		Process:  process,
 	}
 	return span, nil
 }
 
 func (c converter) fromDBTags(tags []KeyValue) ([]model.KeyValue, error) {
-	retMe := make([]model.KeyValue, len(tags))
+	retMe := make([]model.KeyValue, 0, len(tags))
 	for i := range tags {
+		if strings.HasPrefix(tags[i].Key, warningStringPrefix) {
+			continue
+		}
 		kv, err := c.fromDBTag(&tags[i])
 		if err != nil {
 			return nil, err
 		}
-		retMe[i] = kv
+		retMe = append(retMe, kv)
 	}
 	return retMe, nil
 }
 
-func (c converter) fromDBTag(tag *KeyValue) (model.KeyValue, error) {
+func (c converter) fromDBWarnings(tags []KeyValue) ([]string, error) {
+	var retMe []string
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag.Key, warningStringPrefix) {
+			continue
+		}
+		kv, err := c.fromDBTag(&tag)
+		if err != nil {
+			return nil, err
+		}
+		retMe = append(retMe, kv.VStr)
+	}
+	return retMe, nil
+}
+
+func (converter) fromDBTag(tag *KeyValue) (model.KeyValue, error) {
 	switch tag.ValueType {
 	case stringType:
 		return model.String(tag.Key, tag.ValueString), nil
@@ -147,6 +174,7 @@ func (c converter) fromDBLogs(logs []Log) ([]model.Log, error) {
 			return nil, err
 		}
 		retMe[i] = model.Log{
+			//nolint: gosec // G115
 			Timestamp: model.EpochMicrosecondsAsTime(uint64(l.Timestamp)),
 			Fields:    fields,
 		}
@@ -154,7 +182,7 @@ func (c converter) fromDBLogs(logs []Log) ([]model.Log, error) {
 	return retMe, nil
 }
 
-func (c converter) fromDBRefs(refs []SpanRef) ([]model.SpanRef, error) {
+func (converter) fromDBRefs(refs []SpanRef) ([]model.SpanRef, error) {
 	retMe := make([]model.SpanRef, len(refs))
 	for i, r := range refs {
 		refType, ok := dbToDomainRefMap[r.RefType]
@@ -164,7 +192,8 @@ func (c converter) fromDBRefs(refs []SpanRef) ([]model.SpanRef, error) {
 		retMe[i] = model.SpanRef{
 			RefType: refType,
 			TraceID: r.TraceID.ToDomain(),
-			SpanID:  model.NewSpanID(uint64(r.SpanID)),
+			//nolint: gosec // G115
+			SpanID: model.NewSpanID(uint64(r.SpanID)),
 		}
 	}
 	return retMe, nil
@@ -181,7 +210,7 @@ func (c converter) fromDBProcess(process Process) (*model.Process, error) {
 	}, nil
 }
 
-func (c converter) toDBTags(tags []model.KeyValue) []KeyValue {
+func (converter) toDBTags(tags []model.KeyValue) []KeyValue {
 	retMe := make([]KeyValue, len(tags))
 	for i, t := range tags {
 		// do we want to validate a jaeger tag here? Making sure that the type and value matches up?
@@ -198,10 +227,24 @@ func (c converter) toDBTags(tags []model.KeyValue) []KeyValue {
 	return retMe
 }
 
+func (converter) toDBWarnings(warnings []string) []KeyValue {
+	retMe := make([]KeyValue, len(warnings))
+	for i, w := range warnings {
+		kv := model.String(fmt.Sprintf("%s%d", warningStringPrefix, i+1), w)
+		retMe[i] = KeyValue{
+			Key:         kv.Key,
+			ValueType:   domainToDBValueTypeMap[kv.VType],
+			ValueString: kv.VStr,
+		}
+	}
+	return retMe
+}
+
 func (c converter) toDBLogs(logs []model.Log) []Log {
 	retMe := make([]Log, len(logs))
 	for i, l := range logs {
 		retMe[i] = Log{
+			//nolint: gosec // G115
 			Timestamp: int64(model.TimeAsEpochMicroseconds(l.Timestamp)),
 			Fields:    c.toDBTags(l.Fields),
 		}
@@ -209,11 +252,12 @@ func (c converter) toDBLogs(logs []model.Log) []Log {
 	return retMe
 }
 
-func (c converter) toDBRefs(refs []model.SpanRef) []SpanRef {
+func (converter) toDBRefs(refs []model.SpanRef) []SpanRef {
 	retMe := make([]SpanRef, len(refs))
 	for i, r := range refs {
 		retMe[i] = SpanRef{
 			TraceID: TraceIDFromDomain(r.TraceID),
+			//nolint: gosec // G115
 			SpanID:  int64(r.SpanID),
 			RefType: domainToDBRefMap[r.RefType],
 		}

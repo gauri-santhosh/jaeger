@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package config
 
@@ -19,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/asaskevich/govalidator"
 	"github.com/gocql/gocql"
 	"go.uber.org/zap"
 
@@ -29,22 +19,34 @@ import (
 
 // Configuration describes the configuration properties needed to connect to a Cassandra cluster
 type Configuration struct {
-	Servers              []string       `validate:"nonzero" mapstructure:"servers"`
-	Keyspace             string         `validate:"nonzero" mapstructure:"keyspace"`
-	LocalDC              string         `yaml:"local_dc" mapstructure:"local_dc"`
-	ConnectionsPerHost   int            `validate:"min=1" yaml:"connections_per_host" mapstructure:"connections_per_host"`
-	Timeout              time.Duration  `validate:"min=500" mapstructure:"-"`
-	ConnectTimeout       time.Duration  `yaml:"connect_timeout" mapstructure:"connection_timeout"`
-	ReconnectInterval    time.Duration  `validate:"min=500" yaml:"reconnect_interval" mapstructure:"reconnect_interval"`
-	SocketKeepAlive      time.Duration  `validate:"min=0" yaml:"socket_keep_alive" mapstructure:"socket_keep_alive"`
-	MaxRetryAttempts     int            `validate:"min=0" yaml:"max_retry_attempt" mapstructure:"max_retry_attempts"`
-	ProtoVersion         int            `yaml:"proto_version" mapstructure:"proto_version"`
-	Consistency          string         `yaml:"consistency" mapstructure:"consistency"`
-	DisableCompression   bool           `yaml:"disable-compression" mapstructure:"disable_compression"`
-	Port                 int            `yaml:"port" mapstructure:"port"`
-	Authenticator        Authenticator  `yaml:"authenticator" mapstructure:",squash"`
-	DisableAutoDiscovery bool           `yaml:"disable_auto_discovery" mapstructure:"-"`
+	Servers              []string       `valid:"required,url" mapstructure:"servers"`
+	Keyspace             string         `mapstructure:"keyspace"`
+	LocalDC              string         `mapstructure:"local_dc"`
+	ConnectionsPerHost   int            `mapstructure:"connections_per_host"`
+	Timeout              time.Duration  `mapstructure:"-"`
+	ConnectTimeout       time.Duration  `mapstructure:"connection_timeout"`
+	ReconnectInterval    time.Duration  `mapstructure:"reconnect_interval"`
+	SocketKeepAlive      time.Duration  `mapstructure:"socket_keep_alive"`
+	MaxRetryAttempts     int            `mapstructure:"max_retry_attempts"`
+	ProtoVersion         int            `mapstructure:"proto_version"`
+	Consistency          string         `mapstructure:"consistency"`
+	DisableCompression   bool           `mapstructure:"disable_compression"`
+	Port                 int            `mapstructure:"port"`
+	Authenticator        Authenticator  `mapstructure:",squash"`
+	DisableAutoDiscovery bool           `mapstructure:"-"`
 	TLS                  tlscfg.Options `mapstructure:"tls"`
+}
+
+func DefaultConfiguration() Configuration {
+	return Configuration{
+		Servers:            []string{"127.0.0.1"},
+		Port:               9042,
+		MaxRetryAttempts:   3,
+		Keyspace:           "jaeger_v1_test",
+		ProtoVersion:       4,
+		ConnectionsPerHost: 2,
+		ReconnectInterval:  60 * time.Second,
+	}
 }
 
 // Authenticator holds the authentication properties needed to connect to a Cassandra cluster
@@ -55,8 +57,9 @@ type Authenticator struct {
 
 // BasicAuthenticator holds the username and password for a password authenticator for a Cassandra cluster
 type BasicAuthenticator struct {
-	Username string `yaml:"username" mapstructure:"username"`
-	Password string `yaml:"password" mapstructure:"password" json:"-"`
+	Username              string   `yaml:"username" mapstructure:"username"`
+	Password              string   `yaml:"password" mapstructure:"password" json:"-"`
+	AllowedAuthenticators []string `yaml:"allowed_authenticators" mapstructure:"allowed_authenticators"`
 }
 
 // ApplyDefaults copies settings from source unless its own value is non-zero.
@@ -142,8 +145,9 @@ func (c *Configuration) NewCluster(logger *zap.Logger) (*gocql.ClusterConfig, er
 
 	if c.Authenticator.Basic.Username != "" && c.Authenticator.Basic.Password != "" {
 		cluster.Authenticator = gocql.PasswordAuthenticator{
-			Username: c.Authenticator.Basic.Username,
-			Password: c.Authenticator.Basic.Password,
+			Username:              c.Authenticator.Basic.Username,
+			Password:              c.Authenticator.Basic.Password,
+			AllowedAuthenticators: c.Authenticator.Basic.AllowedAuthenticators,
 		}
 	}
 	tlsCfg, err := c.TLS.Config(logger)
@@ -163,6 +167,15 @@ func (c *Configuration) NewCluster(logger *zap.Logger) (*gocql.ClusterConfig, er
 	return cluster, nil
 }
 
+func (c *Configuration) Close() error {
+	return c.TLS.Close()
+}
+
 func (c *Configuration) String() string {
 	return fmt.Sprintf("%+v", *c)
+}
+
+func (c *Configuration) Validate() error {
+	_, err := govalidator.ValidateStruct(c)
+	return err
 }

@@ -1,23 +1,13 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package adjuster
 
 import (
+	"errors"
+
 	"github.com/jaegertracing/jaeger/model"
-	"github.com/jaegertracing/jaeger/pkg/multierror"
 )
 
 // Adjuster applies certain modifications to a Trace object.
@@ -56,7 +46,7 @@ type sequence struct {
 }
 
 func (c sequence) Adjust(trace *model.Trace) (*model.Trace, error) {
-	var errors []error
+	var errs []error
 	for _, adjuster := range c.adjusters {
 		var err error
 		trace, err = adjuster.Adjust(trace)
@@ -64,8 +54,8 @@ func (c sequence) Adjust(trace *model.Trace) (*model.Trace, error) {
 			if c.failFast {
 				return trace, err
 			}
-			errors = append(errors, err)
+			errs = append(errs, err)
 		}
 	}
-	return trace, multierror.Wrap(errors)
+	return trace, errors.Join(errs...)
 }

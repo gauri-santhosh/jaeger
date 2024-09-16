@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -35,6 +24,7 @@ func TestQueryBuilderFlags(t *testing.T) {
 	v, command := config.Viperize(AddFlags)
 	command.ParseFlags([]string{
 		"--query.static-files=/dev/null",
+		"--query.log-static-assets-access=true",
 		"--query.ui-config=some.json",
 		"--query.base-path=/jaeger",
 		"--query.http-server.host-port=127.0.0.1:8080",
@@ -45,7 +35,8 @@ func TestQueryBuilderFlags(t *testing.T) {
 	})
 	qOpts, err := new(QueryOptions).InitFromViper(v, zap.NewNop())
 	require.NoError(t, err)
-	assert.Equal(t, "/dev/null", qOpts.StaticAssets)
+	assert.Equal(t, "/dev/null", qOpts.StaticAssets.Path)
+	assert.True(t, qOpts.StaticAssets.LogAccess)
 	assert.Equal(t, "some.json", qOpts.UIConfig)
 	assert.Equal(t, "/jaeger", qOpts.BasePath)
 	assert.Equal(t, "127.0.0.1:8080", qOpts.HTTPHostPort)
@@ -78,20 +69,20 @@ func TestStringSliceAsHeader(t *testing.T) {
 
 	assert.Equal(t, []string{"https://mozilla.org"}, parsedHeaders["Access-Control-Allow-Origin"])
 	assert.Equal(t, []string{"X-My-Custom-Header", "X-Another-Custom-Header"}, parsedHeaders["Access-Control-Expose-Headers"])
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	malformedHeaders := append(headers, "this is not a valid header")
 	parsedHeaders, err = stringSliceAsHeader(malformedHeaders)
 	assert.Nil(t, parsedHeaders)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	parsedHeaders, err = stringSliceAsHeader([]string{})
 	assert.Nil(t, parsedHeaders)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	parsedHeaders, err = stringSliceAsHeader(nil)
 	assert.Nil(t, parsedHeaders)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestBuildQueryServiceOptions(t *testing.T) {

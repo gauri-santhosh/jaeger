@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dependencystore
 
@@ -87,8 +76,9 @@ func (s *DependencyStore) WriteDependencies(ts time.Time, dependencies []model.D
 	deps := make([]Dependency, len(dependencies))
 	for i, d := range dependencies {
 		deps[i] = Dependency{
-			Parent:    d.Parent,
-			Child:     d.Child,
+			Parent: d.Parent,
+			Child:  d.Child,
+			//nolint: gosec // G115
 			CallCount: int64(d.CallCount),
 			Source:    string(d.Source),
 		}
@@ -105,7 +95,7 @@ func (s *DependencyStore) WriteDependencies(ts time.Time, dependencies []model.D
 }
 
 // GetDependencies returns all interservice dependencies
-func (s *DependencyStore) GetDependencies(ctx context.Context, endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
+func (s *DependencyStore) GetDependencies(_ context.Context, endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
 	startTs := endTs.Add(-1 * lookback)
 	var query cassandra.Query
 	switch s.version {
@@ -122,8 +112,9 @@ func (s *DependencyStore) GetDependencies(ctx context.Context, endTs time.Time, 
 	for iter.Scan(&ts, &dependencies) {
 		for _, dependency := range dependencies {
 			dl := model.DependencyLink{
-				Parent:    dependency.Parent,
-				Child:     dependency.Child,
+				Parent: dependency.Parent,
+				Child:  dependency.Child,
+				//nolint: gosec // G115
 				CallCount: uint64(dependency.CallCount),
 				Source:    dependency.Source,
 			}.ApplyDefaults()

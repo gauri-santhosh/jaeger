@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package es
 
@@ -30,6 +19,7 @@ func TestOptions(t *testing.T) {
 	primary := opts.GetPrimary()
 	assert.Empty(t, primary.Username)
 	assert.Empty(t, primary.Password)
+	assert.Empty(t, primary.PasswordFilePath)
 	assert.NotEmpty(t, primary.Servers)
 	assert.Empty(t, primary.RemoteReadClusters)
 	assert.Equal(t, int64(5), primary.NumShards)
@@ -41,6 +31,7 @@ func TestOptions(t *testing.T) {
 	aux := opts.Get("archive")
 	assert.Equal(t, primary.Username, aux.Username)
 	assert.Equal(t, primary.Password, aux.Password)
+	assert.Equal(t, primary.PasswordFilePath, aux.PasswordFilePath)
 	assert.Equal(t, primary.Servers, aux.Servers)
 }
 
@@ -52,6 +43,7 @@ func TestOptionsWithFlags(t *testing.T) {
 		"--es.username=hello",
 		"--es.password=world",
 		"--es.token-file=/foo/bar",
+		"--es.password-file=/foo/bar/baz",
 		"--es.sniffer=true",
 		"--es.sniffer-tls-enabled=true",
 		"--es.max-span-age=48h",
@@ -81,14 +73,16 @@ func TestOptionsWithFlags(t *testing.T) {
 
 	primary := opts.GetPrimary()
 	assert.Equal(t, "hello", primary.Username)
+	assert.Equal(t, "world", primary.Password)
 	assert.Equal(t, "/foo/bar", primary.TokenFilePath)
+	assert.Equal(t, "/foo/bar/baz", primary.PasswordFilePath)
 	assert.Equal(t, []string{"1.1.1.1", "2.2.2.2"}, primary.Servers)
 	assert.Equal(t, []string{"cluster_one", "cluster_two"}, primary.RemoteReadClusters)
 	assert.Equal(t, 48*time.Hour, primary.MaxSpanAge)
 	assert.True(t, primary.Sniffer)
 	assert.True(t, primary.SnifferTLSEnabled)
-	assert.Equal(t, true, primary.TLS.Enabled)
-	assert.Equal(t, true, primary.TLS.SkipHostVerify)
+	assert.True(t, primary.TLS.Enabled)
+	assert.True(t, primary.TLS.SkipHostVerify)
 	assert.True(t, primary.Tags.AllAsFields)
 	assert.Equal(t, "!", primary.Tags.DotReplacement)
 	assert.Equal(t, "./file.txt", primary.Tags.File)
@@ -131,7 +125,7 @@ func TestMaxSpanAgeSetErrorInArchiveMode(t *testing.T) {
 	_, command := config.Viperize(opts.AddFlags)
 	flags := []string{"--es-archive.max-span-age=24h"}
 	err := command.ParseFlags(flags)
-	assert.EqualError(t, err, "unknown flag: --es-archive.max-span-age")
+	require.EqualError(t, err, "unknown flag: --es-archive.max-span-age")
 }
 
 func TestMaxDocCount(t *testing.T) {

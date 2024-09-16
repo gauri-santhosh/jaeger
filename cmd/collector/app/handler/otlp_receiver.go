@@ -1,16 +1,5 @@
 // Copyright (c) 2022 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package handler
 
@@ -20,16 +9,19 @@ import (
 
 	otlp2jaeger "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
+	nooptrace "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/flags"
@@ -66,17 +58,25 @@ func startOTLPReceiver(
 	// from here: params that can be mocked in tests
 	otlpFactory receiver.Factory,
 	newTraces func(consume consumer.ConsumeTracesFunc, options ...consumer.Option) (consumer.Traces, error),
-	createTracesReceiver func(ctx context.Context, set receiver.CreateSettings,
+	createTracesReceiver func(ctx context.Context, set receiver.Settings,
 		cfg component.Config, nextConsumer consumer.Traces) (receiver.Traces, error),
 ) (receiver.Traces, error) {
 	otlpReceiverConfig := otlpFactory.CreateDefaultConfig().(*otlpreceiver.Config)
 	applyGRPCSettings(otlpReceiverConfig.GRPC, &options.OTLP.GRPC)
-	applyHTTPSettings(otlpReceiverConfig.HTTP, &options.OTLP.HTTP)
-	otlpReceiverSettings := receiver.CreateSettings{
+	applyHTTPSettings(otlpReceiverConfig.HTTP.ServerConfig, &options.OTLP.HTTP)
+	statusReporter := func(ev *componentstatus.Event) {
+		// TODO this could be wired into changing healthcheck.HealthCheck
+		logger.Info("OTLP receiver status change", zap.Stringer("status", ev.Status()))
+	}
+	otlpReceiverSettings := receiver.Settings{
 		TelemetrySettings: component.TelemetrySettings{
 			Logger:         logger,
-			TracerProvider: otel.GetTracerProvider(),      // TODO we may always want no-op here, not the global default
-			MeterProvider:  metric.NewNoopMeterProvider(), // TODO wire this with jaegerlib metrics?
+			TracerProvider: nooptrace.NewTracerProvider(),
+			// TODO wire this with jaegerlib metrics?
+			LeveledMeterProvider: func(_ configtelemetry.Level) metric.MeterProvider {
+				return noopmetric.NewMeterProvider()
+			},
+			MeterProvider: noopmetric.NewMeterProvider(),
 		},
 	}
 
@@ -95,13 +95,13 @@ func startOTLPReceiver(
 	if err != nil {
 		return nil, fmt.Errorf("could not create the OTLP receiver: %w", err)
 	}
-	if err := otlpReceiver.Start(context.Background(), &otelHost{logger: logger}); err != nil {
+	if err := otlpReceiver.Start(context.Background(), &otelHost{logger: logger, reportFunc: statusReporter}); err != nil {
 		return nil, fmt.Errorf("could not start the OTLP receiver: %w", err)
 	}
 	return otlpReceiver, nil
 }
 
-func applyGRPCSettings(cfg *configgrpc.GRPCServerSettings, opts *flags.GRPCOptions) {
+func applyGRPCSettings(cfg *configgrpc.ServerConfig, opts *flags.GRPCOptions) {
 	if opts.HostPort != "" {
 		cfg.NetAddr.Endpoint = opts.HostPort
 	}
@@ -109,7 +109,7 @@ func applyGRPCSettings(cfg *configgrpc.GRPCServerSettings, opts *flags.GRPCOptio
 		cfg.TLSSetting = applyTLSSettings(&opts.TLS)
 	}
 	if opts.MaxReceiveMessageLength > 0 {
-		cfg.MaxRecvMsgSizeMiB = uint64(opts.MaxReceiveMessageLength / (1024 * 1024))
+		cfg.MaxRecvMsgSizeMiB = int(opts.MaxReceiveMessageLength / (1024 * 1024))
 	}
 	if opts.MaxConnectionAge != 0 || opts.MaxConnectionAgeGrace != 0 {
 		cfg.Keepalive = &configgrpc.KeepaliveServerConfig{
@@ -121,23 +121,29 @@ func applyGRPCSettings(cfg *configgrpc.GRPCServerSettings, opts *flags.GRPCOptio
 	}
 }
 
-func applyHTTPSettings(cfg *confighttp.HTTPServerSettings, opts *flags.HTTPOptions) {
+func applyHTTPSettings(cfg *confighttp.ServerConfig, opts *flags.HTTPOptions) {
 	if opts.HostPort != "" {
 		cfg.Endpoint = opts.HostPort
 	}
 	if opts.TLS.Enabled {
 		cfg.TLSSetting = applyTLSSettings(&opts.TLS)
 	}
+
+	cfg.CORS = &confighttp.CORSConfig{
+		AllowedOrigins: opts.CORS.AllowedOrigins,
+		AllowedHeaders: opts.CORS.AllowedHeaders,
+	}
 }
 
-func applyTLSSettings(opts *tlscfg.Options) *configtls.TLSServerSetting {
-	return &configtls.TLSServerSetting{
-		TLSSetting: configtls.TLSSetting{
-			CAFile:     opts.CAPath,
-			CertFile:   opts.CertPath,
-			KeyFile:    opts.KeyPath,
-			MinVersion: opts.MinVersion,
-			MaxVersion: opts.MaxVersion,
+func applyTLSSettings(opts *tlscfg.Options) *configtls.ServerConfig {
+	return &configtls.ServerConfig{
+		Config: configtls.Config{
+			CAFile:         opts.CAPath,
+			CertFile:       opts.CertPath,
+			KeyFile:        opts.KeyPath,
+			MinVersion:     opts.MinVersion,
+			MaxVersion:     opts.MaxVersion,
+			ReloadInterval: opts.ReloadInterval,
 		},
 		ClientCAFile: opts.ClientCAPath,
 	}
@@ -173,9 +179,13 @@ func (c *consumerDelegate) consume(ctx context.Context, td ptrace.Traces) error 
 	return nil
 }
 
+var _ componentstatus.Reporter = (*otelHost)(nil)
+
 // otelHost is a mostly no-op implementation of OTEL component.Host
 type otelHost struct {
 	logger *zap.Logger
+
+	reportFunc func(event *componentstatus.Event)
 }
 
 func (h *otelHost) ReportFatalError(err error) {
@@ -192,4 +202,8 @@ func (*otelHost) GetExtensions() map[component.ID]extension.Extension {
 
 func (*otelHost) GetExporters() map[component.DataType]map[component.ID]component.Component {
 	return nil
+}
+
+func (h *otelHost) Report(event *componentstatus.Event) {
+	h.reportFunc(event)
 }

@@ -1,16 +1,5 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -21,13 +10,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/model"
 )
 
 type noopWriteSpanStore struct{}
 
-func (n *noopWriteSpanStore) WriteSpan(ct context.Context, span *model.Span) error {
+func (*noopWriteSpanStore) WriteSpan(context.Context, *model.Span) error {
 	return nil
 }
 
@@ -35,7 +25,7 @@ var errIWillAlwaysFail = errors.New("ErrProneWriteSpanStore will always fail")
 
 type errorWriteSpanStore struct{}
 
-func (n *errorWriteSpanStore) WriteSpan(ctx context.Context, span *model.Span) error {
+func (*errorWriteSpanStore) WriteSpan(context.Context, *model.Span) error {
 	return errIWillAlwaysFail
 }
 
@@ -53,11 +43,11 @@ func TestDownSamplingWriter_WriteSpan(t *testing.T) {
 		HashSalt: "jaeger-test",
 	}
 	c := NewDownsamplingWriter(&errorWriteSpanStore{}, downsamplingOptions)
-	assert.NoError(t, c.WriteSpan(context.Background(), span))
+	require.NoError(t, c.WriteSpan(context.Background(), span))
 
 	downsamplingOptions.Ratio = 1
 	c = NewDownsamplingWriter(&errorWriteSpanStore{}, downsamplingOptions)
-	assert.Error(t, c.WriteSpan(context.Background(), span))
+	require.Error(t, c.WriteSpan(context.Background(), span))
 }
 
 // This test is to make sure h.hash.Reset() works and same traceID will always hash to the same value.
@@ -69,8 +59,12 @@ func TestDownSamplingWriter_hashBytes(t *testing.T) {
 	}
 	c := NewDownsamplingWriter(&noopWriteSpanStore{}, downsamplingOptions)
 	h := c.sampler.hasherPool.Get().(*hasher)
-	assert.Equal(t, h.hashBytes(), h.hashBytes())
-	c.sampler.hasherPool.Put(h)
+	defer c.sampler.hasherPool.Put(h)
+
+	once := h.hashBytes()
+	twice := h.hashBytes()
+	assert.Equal(t, once, twice, "hashBytes should be idempotent for empty buffer")
+
 	trace := model.TraceID{
 		Low:  uint64(0),
 		High: uint64(1),
@@ -79,8 +73,9 @@ func TestDownSamplingWriter_hashBytes(t *testing.T) {
 		TraceID: trace,
 	}
 	_, _ = span.TraceID.MarshalTo(h.buffer)
-	// Same traceID should always be hashed to same uint64 in DownSamplingWriter.
-	assert.Equal(t, h.hashBytes(), h.hashBytes())
+	once = h.hashBytes()
+	twice = h.hashBytes()
+	assert.Equal(t, once, twice, "hashBytes should be idempotent for non-empty buffer")
 }
 
 func TestDownsamplingWriter_calculateThreshold(t *testing.T) {

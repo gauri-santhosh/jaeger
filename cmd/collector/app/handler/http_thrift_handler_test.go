@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package handler
 
@@ -29,6 +18,7 @@ import (
 	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	jaegerClient "github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/transport"
 
@@ -74,24 +64,24 @@ func TestThriftFormat(t *testing.T) {
 	batch := jaeger.Batch{Process: process, Spans: spans}
 	tser := thrift.NewTSerializer()
 	someBytes, err := tser.Write(context.Background(), &batch)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, someBytes)
 	server, handler := initializeTestServer(nil)
 	defer server.Close()
 
 	statusCode, resBodyStr, err := postBytes("application/x-thrift", server.URL+`/api/traces`, someBytes)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.EqualValues(t, http.StatusAccepted, statusCode)
 	assert.EqualValues(t, "", resBodyStr)
 
 	statusCode, resBodyStr, err = postBytes("application/x-thrift; charset=utf-8", server.URL+`/api/traces`, someBytes)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.EqualValues(t, http.StatusAccepted, statusCode)
 	assert.EqualValues(t, "", resBodyStr)
 
 	handler.jaegerBatchesHandler.(*mockJaegerHandler).err = fmt.Errorf("Bad times ahead")
 	statusCode, resBodyStr, err = postBytes("application/vnd.apache.thrift.binary", server.URL+`/api/traces`, someBytes)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.EqualValues(t, http.StatusInternalServerError, statusCode)
 	assert.EqualValues(t, "Cannot submit Jaeger batch: Bad times ahead\n", resBodyStr)
 }
@@ -127,7 +117,7 @@ func TestViaClient(t *testing.T) {
 		break
 	}
 
-	assert.Equal(t, 1, len(handler.jaegerBatchesHandler.(*mockJaegerHandler).getBatches()))
+	assert.Len(t, handler.jaegerBatchesHandler.(*mockJaegerHandler).getBatches(), 1)
 }
 
 func TestBadBody(t *testing.T) {
@@ -135,7 +125,7 @@ func TestBadBody(t *testing.T) {
 	defer server.Close()
 	bodyBytes := []byte("not good")
 	statusCode, resBodyStr, err := postBytes("application/x-thrift", server.URL+`/api/traces`, bodyBytes)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.EqualValues(t, http.StatusBadRequest, statusCode)
 	assert.EqualValues(t, "Unable to process request body: Unknown data type 110\n", resBodyStr)
 }
@@ -144,7 +134,7 @@ func TestWrongFormat(t *testing.T) {
 	server, _ := initializeTestServer(nil)
 	defer server.Close()
 	statusCode, resBodyStr, err := postBytes("nosoupforyou", server.URL+`/api/traces`, []byte{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.EqualValues(t, http.StatusBadRequest, statusCode)
 	assert.EqualValues(t, "Unsupported content type: nosoupforyou\n", resBodyStr)
 }
@@ -153,7 +143,7 @@ func TestMalformedFormat(t *testing.T) {
 	server, _ := initializeTestServer(nil)
 	defer server.Close()
 	statusCode, resBodyStr, err := postBytes("application/json; =iammalformed", server.URL+`/api/traces`, []byte{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.EqualValues(t, http.StatusBadRequest, statusCode)
 	assert.EqualValues(t, "Cannot parse content type: mime: invalid media parameter\n", resBodyStr)
 }
@@ -161,7 +151,7 @@ func TestMalformedFormat(t *testing.T) {
 func TestCannotReadBodyFromRequest(t *testing.T) {
 	handler := NewAPIHandler(&mockJaegerHandler{})
 	req, err := http.NewRequest(http.MethodPost, "whatever", &errReader{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	rw := dummyResponseWriter{}
 	handler.SaveSpan(&rw, req)
 	assert.EqualValues(t, http.StatusInternalServerError, rw.myStatusCode)
@@ -170,7 +160,7 @@ func TestCannotReadBodyFromRequest(t *testing.T) {
 
 type errReader struct{}
 
-func (e *errReader) Read(p []byte) (int, error) {
+func (*errReader) Read([]byte) (int, error) {
 	return 0, fmt.Errorf("Simulated error reading body")
 }
 
@@ -179,7 +169,7 @@ type dummyResponseWriter struct {
 	myStatusCode int
 }
 
-func (d *dummyResponseWriter) Header() http.Header {
+func (*dummyResponseWriter) Header() http.Header {
 	return http.Header{}
 }
 

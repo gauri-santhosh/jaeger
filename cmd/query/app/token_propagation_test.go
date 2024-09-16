@@ -1,16 +1,5 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -22,16 +11,17 @@ import (
 	"testing"
 
 	"github.com/olivere/elastic"
-	"github.com/opentracing/opentracing-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 
-	"github.com/jaegertracing/jaeger/cmd/flags"
+	"github.com/jaegertracing/jaeger/cmd/internal/flags"
 	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
 	"github.com/jaegertracing/jaeger/pkg/bearertoken"
 	"github.com/jaegertracing/jaeger/pkg/config"
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
+	"github.com/jaegertracing/jaeger/pkg/telemetery"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/plugin/storage/es"
 	"github.com/jaegertracing/jaeger/ports"
@@ -46,7 +36,7 @@ type elasticsearchHandlerMock struct {
 	test *testing.T
 }
 
-func (h *elasticsearchHandlerMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (*elasticsearchHandlerMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if token, ok := bearertoken.GetBearerToken(r.Context()); ok && token == bearerToken {
 		// Return empty results, we don't care about the result here.
 		// we just need to make sure the token was propagated to the storage and the query-service returns 200
@@ -85,15 +75,27 @@ func runQueryService(t *testing.T, esURL string) *Server {
 	// set AllowTokenFromContext manually because we don't register the respective CLI flag from query svc
 	f.Options.Primary.AllowTokenFromContext = true
 	require.NoError(t, f.Initialize(metrics.NullFactory, flagsSvc.Logger))
+	defer f.Close()
 
 	spanReader, err := f.CreateSpanReader()
 	require.NoError(t, err)
 
 	querySvc := querysvc.NewQueryService(spanReader, nil, querysvc.QueryServiceOptions{})
-	server, err := NewServer(flagsSvc.Logger, querySvc, nil,
-		&QueryOptions{GRPCHostPort: ":0", HTTPHostPort: ":0", BearerTokenPropagation: true},
+	telset := telemetery.Setting{
+		Logger:         flagsSvc.Logger,
+		TracerProvider: jtracer.NoOp().OTEL,
+		ReportStatus:   telemetery.HCAdapter(flagsSvc.HC()),
+	}
+	server, err := NewServer(querySvc, nil,
+		&QueryOptions{
+			GRPCHostPort: ":0",
+			HTTPHostPort: ":0",
+			QueryOptionsBase: QueryOptionsBase{
+				BearerTokenPropagation: true,
+			},
+		},
 		tenancy.NewManager(&tenancy.Options{}),
-		opentracing.NoopTracer{},
+		telset,
 	)
 	require.NoError(t, err)
 	require.NoError(t, server.Start())
@@ -123,7 +125,7 @@ func TestBearerTokenPropagation(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			req, err := http.NewRequest("GET", url, nil)
+			req, err := http.NewRequest(http.MethodGet, url, nil)
 			require.NoError(t, err)
 			req.Header.Add(testCase.headerName, testCase.headerValue)
 
@@ -131,8 +133,9 @@ func TestBearerTokenPropagation(t *testing.T) {
 			resp, err := client.Do(req)
 			require.NoError(t, err)
 			require.NotNil(t, resp)
+			defer resp.Body.Close()
 
-			assert.Equal(t, resp.StatusCode, http.StatusOK)
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 	}
 }

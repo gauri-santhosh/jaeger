@@ -1,16 +1,5 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package tlscfg
 
@@ -118,6 +107,40 @@ func TestServerFlags(t *testing.T) {
 				MinVersion:   "1.2",
 				MaxVersion:   "1.3",
 			}, tlsOpts)
+		})
+	}
+}
+
+func TestServerCertReloadInterval(t *testing.T) {
+	tests := []struct {
+		config ServerFlagsConfig
+	}{
+		{
+			config: ServerFlagsConfig{
+				Prefix:                   "enabled",
+				EnableCertReloadInterval: true,
+			},
+		},
+		{
+			config: ServerFlagsConfig{
+				Prefix:                   "disabled",
+				EnableCertReloadInterval: false,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.config.Prefix, func(t *testing.T) {
+			_, command := config.Viperize(test.config.AddFlags)
+			err := command.ParseFlags([]string{
+				"--" + test.config.Prefix + ".tls.enabled=true",
+				"--" + test.config.Prefix + ".tls.reload-interval=24h",
+			})
+			if !test.config.EnableCertReloadInterval {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unknown flag")
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }

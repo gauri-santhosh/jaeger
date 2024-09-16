@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -29,6 +18,7 @@ import (
 
 	"github.com/jaegertracing/jaeger/internal/metricstest"
 	"github.com/jaegertracing/jaeger/model"
+	"github.com/jaegertracing/jaeger/pkg/es"
 	"github.com/jaegertracing/jaeger/pkg/es/mocks"
 	"github.com/jaegertracing/jaeger/pkg/testutils"
 	"github.com/jaegertracing/jaeger/plugin/storage/es/spanstore/dbmodel"
@@ -50,7 +40,7 @@ func withSpanWriter(fn func(w *spanWriterTest)) {
 		client:    client,
 		logger:    logger,
 		logBuffer: logBuffer,
-		writer:    NewSpanWriter(SpanWriterParams{Client: client, Logger: logger, MetricsFactory: metricsFactory, SpanIndexDateLayout: "2006-01-02", ServiceIndexDateLayout: "2006-01-02"}),
+		writer:    NewSpanWriter(SpanWriterParams{Client: func() es.Client { return client }, Logger: logger, MetricsFactory: metricsFactory, SpanIndexDateLayout: "2006-01-02", ServiceIndexDateLayout: "2006-01-02"}),
 	}
 	fn(w)
 }
@@ -59,6 +49,7 @@ var _ spanstore.Writer = &SpanWriter{} // check API conformance
 
 func TestSpanWriterIndices(t *testing.T) {
 	client := &mocks.Client{}
+	clientFn := func() es.Client { return client }
 	logger, _ := testutils.NewLogger()
 	metricsFactory := metricstest.NewFactory(0)
 	date := time.Now()
@@ -72,49 +63,49 @@ func TestSpanWriterIndices(t *testing.T) {
 	}{
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, Archive: false,
 			},
 			indices: []string{spanIndex + spanDataLayoutFormat, serviceIndex + serviceDataLayoutFormat},
 		},
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, UseReadWriteAliases: true,
 			},
 			indices: []string{spanIndex + "write", serviceIndex + "write"},
 		},
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, Archive: false,
 			},
 			indices: []string{"foo:" + indexPrefixSeparator + spanIndex + spanDataLayoutFormat, "foo:" + indexPrefixSeparator + serviceIndex + serviceDataLayoutFormat},
 		},
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, UseReadWriteAliases: true,
 			},
 			indices: []string{"foo:-" + spanIndex + "write", "foo:-" + serviceIndex + "write"},
 		},
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, Archive: true,
 			},
 			indices: []string{spanIndex + archiveIndexSuffix, ""},
 		},
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, Archive: true,
 			},
 			indices: []string{"foo:" + indexPrefixSeparator + spanIndex + archiveIndexSuffix, ""},
 		},
 		{
 			params: SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout, Archive: true, UseReadWriteAliases: true,
 			},
 			indices: []string{"foo:" + indexPrefixSeparator + spanIndex + archiveWriteIndexSuffix, ""},
@@ -123,7 +114,7 @@ func TestSpanWriterIndices(t *testing.T) {
 	for _, testCase := range testCases {
 		w := NewSpanWriter(testCase.params)
 		spanIndexName, serviceIndexName := w.spanServiceIndex(date)
-		assert.Equal(t, testCase.indices, []string{spanIndexName, serviceIndexName})
+		assert.Equal(t, []string{spanIndexName, serviceIndexName}, testCase.indices)
 	}
 }
 
@@ -201,7 +192,7 @@ func TestSpanWriter_WriteSpan(t *testing.T) {
 					indexServicePut.AssertNumberOfCalls(t, "Add", 1)
 					indexSpanPut.AssertNumberOfCalls(t, "Add", 1)
 				} else {
-					assert.EqualError(t, err, testCase.expectedError)
+					require.EqualError(t, err, testCase.expectedError)
 				}
 
 				for _, expectedLog := range testCase.expectedLogs {
@@ -293,7 +284,7 @@ func TestCreateTemplates(t *testing.T) {
 			w.client.On("CreateTemplate", prefix+"jaeger-service").Return(test.serviceTemplateService())
 			err := w.writer.CreateTemplates(mock.Anything, mock.Anything, test.indexPrefix)
 			if test.err != "" {
-				assert.Error(t, err, test.err)
+				require.Error(t, err, test.err)
 			}
 		})
 	}
@@ -355,6 +346,7 @@ func TestWriteSpanInternalError(t *testing.T) {
 
 func TestNewSpanTags(t *testing.T) {
 	client := &mocks.Client{}
+	clientFn := func() es.Client { return client }
 	logger, _ := testutils.NewLogger()
 	metricsFactory := metricstest.NewFactory(0)
 	testCases := []struct {
@@ -364,28 +356,28 @@ func TestNewSpanTags(t *testing.T) {
 	}{
 		{
 			writer: NewSpanWriter(SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				AllTagsAsFields: true,
 			}),
 			expected: dbmodel.Span{
-				Tag: map[string]interface{}{"foo": "bar"}, Tags: []dbmodel.KeyValue{},
-				Process: dbmodel.Process{Tag: map[string]interface{}{"bar": "baz"}, Tags: []dbmodel.KeyValue{}},
+				Tag: map[string]any{"foo": "bar"}, Tags: []dbmodel.KeyValue{},
+				Process: dbmodel.Process{Tag: map[string]any{"bar": "baz"}, Tags: []dbmodel.KeyValue{}},
 			},
 			name: "allTagsAsFields",
 		},
 		{
 			writer: NewSpanWriter(SpanWriterParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
+				Client: clientFn, Logger: logger, MetricsFactory: metricsFactory,
 				TagKeysAsFields: []string{"foo", "bar", "rere"},
 			}),
 			expected: dbmodel.Span{
-				Tag: map[string]interface{}{"foo": "bar"}, Tags: []dbmodel.KeyValue{},
-				Process: dbmodel.Process{Tag: map[string]interface{}{"bar": "baz"}, Tags: []dbmodel.KeyValue{}},
+				Tag: map[string]any{"foo": "bar"}, Tags: []dbmodel.KeyValue{},
+				Process: dbmodel.Process{Tag: map[string]any{"bar": "baz"}, Tags: []dbmodel.KeyValue{}},
 			},
 			name: "definedTagNames",
 		},
 		{
-			writer: NewSpanWriter(SpanWriterParams{Client: client, Logger: logger, MetricsFactory: metricsFactory}),
+			writer: NewSpanWriter(SpanWriterParams{Client: clientFn, Logger: logger, MetricsFactory: metricsFactory}),
 			expected: dbmodel.Span{
 				Tags: []dbmodel.KeyValue{{
 					Key:   "foo",
@@ -421,19 +413,16 @@ func TestSpanWriterParamsTTL(t *testing.T) {
 	logger, _ := testutils.NewLogger()
 	metricsFactory := metricstest.NewFactory(0)
 	testCases := []struct {
-		indexTTL         time.Duration
 		serviceTTL       time.Duration
 		name             string
 		expectedAddCalls int
 	}{
 		{
-			indexTTL:         0,
 			serviceTTL:       0,
 			name:             "uses defaults",
 			expectedAddCalls: 1,
 		},
 		{
-			indexTTL:         1 * time.Nanosecond,
 			serviceTTL:       1 * time.Nanosecond,
 			name:             "uses provided values",
 			expectedAddCalls: 3,
@@ -444,11 +433,10 @@ func TestSpanWriterParamsTTL(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			client := &mocks.Client{}
 			params := SpanWriterParams{
-				Client:          client,
+				Client:          func() es.Client { return client },
 				Logger:          logger,
 				MetricsFactory:  metricsFactory,
 				ServiceCacheTTL: test.serviceTTL,
-				IndexCacheTTL:   test.indexTTL,
 			}
 			w := NewSpanWriter(params)
 
@@ -486,7 +474,7 @@ func TestSpanWriterParamsTTL(t *testing.T) {
 }
 
 // stringMatcher can match a string argument when it contains a specific substring q
-func stringMatcher(q string) interface{} {
+func stringMatcher(q string) any {
 	matchFunc := func(s string) bool {
 		return strings.Contains(s, q)
 	}

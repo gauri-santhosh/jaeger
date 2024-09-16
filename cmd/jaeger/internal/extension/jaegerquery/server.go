@@ -1,0 +1,181 @@
+// Copyright (c) 2023 The Jaeger Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package jaegerquery
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
+	"go.opentelemetry.io/collector/extension"
+	"go.opentelemetry.io/collector/extension/extensioncapabilities"
+
+	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerstorage"
+	queryApp "github.com/jaegertracing/jaeger/cmd/query/app"
+	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
+	"github.com/jaegertracing/jaeger/internal/metrics/otelmetrics"
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
+	"github.com/jaegertracing/jaeger/pkg/metrics"
+	"github.com/jaegertracing/jaeger/pkg/telemetery"
+	"github.com/jaegertracing/jaeger/pkg/tenancy"
+	"github.com/jaegertracing/jaeger/plugin/metrics/disabled"
+	"github.com/jaegertracing/jaeger/storage/metricsstore"
+	storageMetrics "github.com/jaegertracing/jaeger/storage/spanstore/metrics"
+)
+
+var (
+	_ extension.Extension             = (*server)(nil)
+	_ extensioncapabilities.Dependent = (*server)(nil)
+)
+
+type server struct {
+	config      *Config
+	server      *queryApp.Server
+	telset      component.TelemetrySettings
+	closeTracer func(ctx context.Context) error
+}
+
+func newServer(config *Config, otel component.TelemetrySettings) *server {
+	return &server{
+		config: config,
+		telset: otel,
+	}
+}
+
+// Dependencies implements extensioncapabilities.Dependent
+// to ensure this always starts after jaegerstorage extension.
+func (*server) Dependencies() []component.ID {
+	return []component.ID{jaegerstorage.ID}
+}
+
+func (s *server) Start(_ context.Context, host component.Host) error {
+	mf := otelmetrics.NewFactory(s.telset.MeterProvider)
+	baseFactory := mf.Namespace(metrics.NSOptions{Name: "jaeger"})
+	queryMetricsFactory := baseFactory.Namespace(metrics.NSOptions{Name: "query"})
+	f, err := jaegerstorage.GetStorageFactory(s.config.TraceStoragePrimary, host)
+	if err != nil {
+		return fmt.Errorf("cannot find primary storage %s: %w", s.config.TraceStoragePrimary, err)
+	}
+
+	spanReader, err := f.CreateSpanReader()
+	if err != nil {
+		return fmt.Errorf("cannot create span reader: %w", err)
+	}
+
+	spanReader = storageMetrics.NewReadMetricsDecorator(spanReader, queryMetricsFactory)
+
+	depReader, err := f.CreateDependencyReader()
+	if err != nil {
+		return fmt.Errorf("cannot create dependencies reader: %w", err)
+	}
+
+	var opts querysvc.QueryServiceOptions
+	if err := s.addArchiveStorage(&opts, host); err != nil {
+		return err
+	}
+	qs := querysvc.NewQueryService(spanReader, depReader, opts)
+
+	mqs, err := s.createMetricReader(host)
+	if err != nil {
+		return err
+	}
+
+	tm := tenancy.NewManager(&s.config.Tenancy)
+
+	// TODO OTel-collector does not initialize the tracer currently
+	// https://github.com/open-telemetry/opentelemetry-collector/issues/7532
+	//nolint
+	tracerProvider, err := jtracer.New("jaeger")
+	if err != nil {
+		return fmt.Errorf("could not initialize a tracer: %w", err)
+	}
+	s.closeTracer = tracerProvider.Close
+	telset := telemetery.Setting{
+		Logger:         s.telset.Logger,
+		TracerProvider: tracerProvider.OTEL,
+		Metrics:        queryMetricsFactory,
+		ReportStatus: func(event *componentstatus.Event) {
+			componentstatus.ReportStatus(host, event)
+		},
+	}
+
+	// TODO contextcheck linter complains about next line that context is not passed. It is not wrong.
+	//nolint
+	s.server, err = queryApp.NewServer(
+		// TODO propagate healthcheck updates up to the collector's runtime
+		qs,
+		mqs,
+		s.makeQueryOptions(),
+		tm,
+		telset,
+	)
+	if err != nil {
+		return fmt.Errorf("could not create jaeger-query: %w", err)
+	}
+
+	if err := s.server.Start(); err != nil {
+		return fmt.Errorf("could not start jaeger-query: %w", err)
+	}
+
+	return nil
+}
+
+func (s *server) addArchiveStorage(opts *querysvc.QueryServiceOptions, host component.Host) error {
+	if s.config.TraceStorageArchive == "" {
+		s.telset.Logger.Info("Archive storage not configured")
+		return nil
+	}
+
+	f, err := jaegerstorage.GetStorageFactory(s.config.TraceStorageArchive, host)
+	if err != nil {
+		return fmt.Errorf("cannot find archive storage factory: %w", err)
+	}
+
+	if !opts.InitArchiveStorage(f, s.telset.Logger) {
+		s.telset.Logger.Info("Archive storage not initialized")
+	}
+	return nil
+}
+
+func (s *server) createMetricReader(host component.Host) (metricsstore.Reader, error) {
+	if s.config.MetricStorage == "" {
+		s.telset.Logger.Info("Metric storage not configured")
+		return disabled.NewMetricsReader()
+	}
+
+	mf, err := jaegerstorage.GetMetricsFactory(s.config.MetricStorage, host)
+	if err != nil {
+		return nil, fmt.Errorf("cannot find metrics storage factory: %w", err)
+	}
+
+	metricsReader, err := mf.CreateMetricsReader()
+	if err != nil {
+		return nil, fmt.Errorf("cannot create metrics reader %w", err)
+	}
+	return metricsReader, err
+}
+
+func (s *server) makeQueryOptions() *queryApp.QueryOptions {
+	return &queryApp.QueryOptions{
+		QueryOptionsBase: s.config.QueryOptionsBase,
+
+		// TODO utilize OTEL helpers for creating HTTP/GRPC servers
+		HTTPHostPort: s.config.HTTP.Endpoint,
+		GRPCHostPort: s.config.GRPC.NetAddr.Endpoint,
+		// TODO handle TLS
+	}
+}
+
+func (s *server) Shutdown(ctx context.Context) error {
+	var errs []error
+	if s.server != nil {
+		errs = append(errs, s.server.Close())
+	}
+	if s.closeTracer != nil {
+		errs = append(errs, s.closeTracer(ctx))
+	}
+	return errors.Join(errs...)
+}

@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package processors
 
@@ -79,9 +68,10 @@ func createProcessor(t *testing.T, mFactory metrics.Factory, tFactory thrift.TPr
 	return transport.Addr().String(), processor
 }
 
+// revive:disable-next-line function-result-limit
 func initCollectorAndReporter(t *testing.T) (*metricstest.Factory, *testutils.GrpcCollector, reporter.Reporter, *grpc.ClientConn) {
 	grpcCollector := testutils.StartGRPCCollector(t)
-	conn, err := grpc.Dial(grpcCollector.Listener().Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(grpcCollector.Listener().Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	rep := grpcrep.NewReporter(conn, map[string]string{}, zaptest.NewLogger(t))
 	metricsFactory := metricstest.NewFactory(0)
@@ -91,7 +81,7 @@ func initCollectorAndReporter(t *testing.T) (*metricstest.Factory, *testutils.Gr
 
 func TestNewThriftProcessor_ZeroCount(t *testing.T) {
 	_, err := NewThriftProcessor(nil, 0, nil, nil, nil, zaptest.NewLogger(t))
-	assert.EqualError(t, err, "number of processors must be greater than 0, called with 0")
+	require.EqualError(t, err, "number of processors must be greater than 0, called with 0")
 }
 
 func TestProcessorWithCompactZipkin(t *testing.T) {
@@ -120,7 +110,7 @@ type failingHandler struct {
 	err error
 }
 
-func (h failingHandler) Process(_ context.Context, iprot, oprot thrift.TProtocol) (success bool, err thrift.TException) {
+func (h failingHandler) Process(context.Context, thrift.TProtocol /* iprot */, thrift.TProtocol /* oprot */) (success bool, err thrift.TException) {
 	return false, thrift.NewTApplicationException(0, h.err.Error())
 }
 

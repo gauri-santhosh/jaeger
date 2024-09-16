@@ -1,92 +1,80 @@
 // Copyright (c) 2023 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package rpcmetrics
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
-	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/stretchr/testify/assert"
-	otbridge "go.opentelemetry.io/otel/bridge/opentracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
-	"github.com/opentracing/opentracing-go/ext"
+	"go.opentelemetry.io/otel/trace"
 
 	u "github.com/jaegertracing/jaeger/internal/metricstest"
+	"github.com/jaegertracing/jaeger/pkg/otelsemconv"
 )
 
 type testTracer struct {
 	metrics *u.Factory
-	tracer  opentracing.Tracer
+	tracer  trace.Tracer
 }
 
 func withTestTracer(runTest func(tt *testTracer)) {
 	metrics := u.NewFactory(time.Minute)
+	defer metrics.Stop()
 	observer := NewObserver(metrics, DefaultNameNormalizer)
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(observer),
 		sdktrace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String("test"),
+			otelsemconv.SchemaURL,
+			otelsemconv.ServiceNameKey.String("test"),
 		)),
 	)
-	tracer, _ := otbridge.NewTracerPair(tp.Tracer(""))
 	runTest(&testTracer{
 		metrics: metrics,
-		tracer:  tracer,
+		tracer:  tp.Tracer("test"),
 	})
 }
 
 func TestObserver(t *testing.T) {
 	withTestTracer(func(testTracer *testTracer) {
 		ts := time.Now()
-		finishOptions := opentracing.FinishOptions{
-			FinishTime: ts.Add(50 * time.Millisecond),
-		}
+		finishOptions := trace.WithTimestamp(ts.Add((50 * time.Millisecond)))
 
 		testCases := []struct {
 			name           string
-			tag            opentracing.Tag
+			spanKind       trace.SpanKind
 			opNameOverride string
 			err            bool
 		}{
-			{name: "local-span", tag: opentracing.Tag{Key: "x", Value: "y"}},
-			{name: "get-user", tag: ext.SpanKindRPCServer},
-			{name: "get-user", tag: ext.SpanKindRPCServer, opNameOverride: "get-user-override"},
-			{name: "get-user", tag: ext.SpanKindRPCServer, err: true},
-			{name: "get-user-client", tag: ext.SpanKindRPCClient},
+			{name: "local-span", spanKind: trace.SpanKindInternal},
+			{name: "get-user", spanKind: trace.SpanKindServer},
+			{name: "get-user", spanKind: trace.SpanKindServer, opNameOverride: "get-user-override"},
+			{name: "get-user", spanKind: trace.SpanKindServer, err: true},
+			{name: "get-user-client", spanKind: trace.SpanKindClient},
 		}
 
 		for _, testCase := range testCases {
-			span := testTracer.tracer.StartSpan(
-				testCase.name,
-				testCase.tag,
-				opentracing.StartTime(ts),
+			_, span := testTracer.tracer.Start(
+				context.Background(),
+				testCase.name, trace.WithSpanKind(testCase.spanKind),
+				trace.WithTimestamp(ts),
 			)
 			if testCase.opNameOverride != "" {
-				span.SetOperationName(testCase.opNameOverride)
+				span.SetName(testCase.opNameOverride)
 			}
 			if testCase.err {
-				ext.Error.Set(span, true)
+				span.SetStatus(codes.Error, "An error occurred")
 			}
-			span.FinishWithOptions(finishOptions)
+			span.End(finishOptions)
 		}
 
 		testTracer.metrics.AssertCounterMetrics(t,
@@ -106,55 +94,43 @@ func TestObserver(t *testing.T) {
 
 func TestTags(t *testing.T) {
 	type tagTestCase struct {
-		key     string
-		variant string
-		value   interface{}
+		attr    attribute.KeyValue
+		err     bool
 		metrics []u.ExpectedMetric
 	}
-
 	testCases := []tagTestCase{
-		{key: "something", value: 42, metrics: []u.ExpectedMetric{
+		{err: false, metrics: []u.ExpectedMetric{
 			{Name: "requests", Value: 1, Tags: tags("error", "false")},
 		}},
-		{key: "error", value: true, metrics: []u.ExpectedMetric{
+		{err: true, metrics: []u.ExpectedMetric{
 			{Name: "requests", Value: 1, Tags: tags("error", "true")},
 		}},
-		// OTEL bridge does not interpret string "true" as error status
-		// {key: "error", value: "true", variant: "string", metrics: []u.ExpectedMetric{
-		// 	{Name: "requests", Value: 1, Tags: tags("error", "true")},
-		// }},
 	}
 
 	for i := 200; i <= 500; i += 100 {
-		status_codes := []struct {
-			value   interface{}
-			variant string
-		}{
-			{value: i},
-			{value: uint16(i), variant: "uint16"},
-			{value: fmt.Sprintf("%d", i), variant: "string"},
-		}
-		for _, v := range status_codes {
-			testCases = append(testCases, tagTestCase{
-				key:     "http.status_code",
-				value:   v.value,
-				variant: v.variant,
-				metrics: []u.ExpectedMetric{
-					{Name: "http_requests", Value: 1, Tags: tags("status_code", fmt.Sprintf("%dxx", i/100))},
-				},
-			})
-		}
+		testCases = append(testCases, tagTestCase{
+			attr: otelsemconv.HTTPResponseStatusCode(i),
+			metrics: []u.ExpectedMetric{
+				{Name: "http_requests", Value: 1, Tags: tags("status_code", fmt.Sprintf("%dxx", i/100))},
+			},
+		})
 	}
 
 	for _, testCase := range testCases {
 		for i := range testCase.metrics {
 			testCase.metrics[i].Tags["endpoint"] = "span"
 		}
-		t.Run(fmt.Sprintf("%s-%v-%s", testCase.key, testCase.value, testCase.variant), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s-%v", testCase.attr.Key, testCase.attr.Value), func(t *testing.T) {
 			withTestTracer(func(testTracer *testTracer) {
-				span := testTracer.tracer.StartSpan("span", ext.SpanKindRPCServer)
-				span.SetTag(testCase.key, testCase.value)
-				span.Finish()
+				_, span := testTracer.tracer.Start(
+					context.Background(),
+					"span", trace.WithSpanKind(trace.SpanKindServer),
+				)
+				span.SetAttributes(testCase.attr)
+				if testCase.err {
+					span.SetStatus(codes.Error, "An error occurred")
+				}
+				span.End()
 				testTracer.metrics.AssertCounterMetrics(t, testCase.metrics...)
 			})
 		})

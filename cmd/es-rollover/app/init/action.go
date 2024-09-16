@@ -1,21 +1,11 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package init
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -39,13 +29,17 @@ type Action struct {
 
 func (c Action) getMapping(version uint, templateName string) (string, error) {
 	mappingBuilder := mappings.MappingBuilder{
-		TemplateBuilder: es.TextTemplateBuilder{},
-		Shards:          int64(c.Config.Shards),
-		Replicas:        int64(c.Config.Replicas),
-		IndexPrefix:     c.Config.IndexPrefix,
-		UseILM:          c.Config.UseILM,
-		ILMPolicyName:   c.Config.ILMPolicyName,
-		EsVersion:       version,
+		TemplateBuilder:              es.TextTemplateBuilder{},
+		PrioritySpanTemplate:         int64(c.Config.PrioritySpanTemplate),
+		PriorityServiceTemplate:      int64(c.Config.PriorityServiceTemplate),
+		PriorityDependenciesTemplate: int64(c.Config.PriorityDependenciesTemplate),
+		PrioritySamplingTemplate:     int64(c.Config.PrioritySamplingTemplate),
+		Shards:                       int64(c.Config.Shards),
+		Replicas:                     int64(c.Config.Replicas),
+		IndexPrefix:                  c.Config.IndexPrefix,
+		UseILM:                       c.Config.UseILM,
+		ILMPolicyName:                c.Config.ILMPolicyName,
+		EsVersion:                    version,
 	}
 	return mappingBuilder.GetMapping(templateName)
 }
@@ -57,19 +51,18 @@ func (c Action) Do() error {
 		return err
 	}
 	if c.Config.UseILM {
-		if version == ilmVersionSupport {
-			policyExist, err := c.ILMClient.Exists(c.Config.ILMPolicyName)
-			if err != nil {
-				return err
-			}
-			if !policyExist {
-				return fmt.Errorf("ILM policy %s doesn't exist in Elasticsearch. Please create it and re-run init", c.Config.ILMPolicyName)
-			}
-		} else {
+		if version < ilmVersionSupport {
 			return fmt.Errorf("ILM is supported only for ES version 7+")
 		}
+		policyExist, err := c.ILMClient.Exists(c.Config.ILMPolicyName)
+		if err != nil {
+			return err
+		}
+		if !policyExist {
+			return fmt.Errorf("ILM policy %s doesn't exist in Elasticsearch. Please create it and re-run init", c.Config.ILMPolicyName)
+		}
 	}
-	rolloverIndices := app.RolloverIndices(c.Config.Archive, c.Config.SkipDependencies, c.Config.IndexPrefix)
+	rolloverIndices := app.RolloverIndices(c.Config.Archive, c.Config.SkipDependencies, c.Config.AdaptiveSampling, c.Config.IndexPrefix)
 	for _, indexName := range rolloverIndices {
 		if err := c.init(version, indexName); err != nil {
 			return err
@@ -81,18 +74,19 @@ func (c Action) Do() error {
 func createIndexIfNotExist(c client.IndexAPI, index string) error {
 	err := c.CreateIndex(index)
 	if err != nil {
-		if esErr, ok := err.(client.ResponseError); ok {
+		var esErr client.ResponseError
+		if errors.As(err, &esErr) {
 			if esErr.StatusCode != http.StatusBadRequest || esErr.Body == nil {
 				return esErr.Err
 			}
 			// check for the reason of the error
-			jsonError := map[string]interface{}{}
+			jsonError := map[string]any{}
 			err := json.Unmarshal(esErr.Body, &jsonError)
 			if err != nil {
 				// return unmarshal error
 				return err
 			}
-			errorMap := jsonError["error"].(map[string]interface{})
+			errorMap := jsonError["error"].(map[string]any)
 			// check for reason, ignore already exist error
 			if strings.Contains(errorMap["type"].(string), "resource_already_exists_exception") {
 				return nil
@@ -109,7 +103,6 @@ func (c Action) init(version uint, indexopt app.IndexOption) error {
 	if err != nil {
 		return err
 	}
-
 	err = c.IndicesClient.CreateTemplate(mapping, indexopt.TemplateName())
 	if err != nil {
 		return err

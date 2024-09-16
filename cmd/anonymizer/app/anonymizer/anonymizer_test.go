@@ -1,16 +1,5 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package anonymizer
 
@@ -21,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/model"
@@ -81,7 +71,8 @@ func TestNew(t *testing.T) {
 	tempDir := t.TempDir()
 
 	file, err := os.CreateTemp(tempDir, "mapping.json")
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer file.Close()
 
 	_, err = file.Write([]byte(`
 {
@@ -93,9 +84,10 @@ func TestNew(t *testing.T) {
 	}
 }
 `))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	anonymizer := New(file.Name(), Options{}, nopLogger)
+	defer anonymizer.Stop()
 	assert.NotNil(t, anonymizer)
 }
 
@@ -121,7 +113,7 @@ func TestAnonymizer_SaveMapping(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name, func(_ *testing.T) {
 			anonymizer := Anonymizer{
 				logger:      nopLogger,
 				mapping:     mapping,
@@ -153,7 +145,7 @@ func TestAnonymizer_Hash(t *testing.T) {
 	data := "foobar"
 	expected := "340d8765a4dda9c2"
 	actual := hash(data)
-	assert.Equal(t, actual, expected)
+	assert.Equal(t, expected, actual)
 }
 
 func TestAnonymizer_AnonymizeSpan_AllTrue(t *testing.T) {
@@ -170,9 +162,9 @@ func TestAnonymizer_AnonymizeSpan_AllTrue(t *testing.T) {
 		},
 	}
 	_ = anonymizer.AnonymizeSpan(span1)
-	assert.Equal(t, 3, len(span1.Tags))
-	assert.Equal(t, 1, len(span1.Logs))
-	assert.Equal(t, 3, len(span1.Process.Tags))
+	assert.Len(t, span1.Tags, 3)
+	assert.Len(t, span1.Logs, 1)
+	assert.Len(t, span1.Process.Tags, 3)
 }
 
 func TestAnonymizer_AnonymizeSpan_AllFalse(t *testing.T) {
@@ -189,9 +181,9 @@ func TestAnonymizer_AnonymizeSpan_AllFalse(t *testing.T) {
 		},
 	}
 	_ = anonymizer.AnonymizeSpan(span2)
-	assert.Equal(t, 2, len(span2.Tags))
-	assert.Equal(t, 0, len(span2.Logs))
-	assert.Equal(t, 0, len(span2.Process.Tags))
+	assert.Len(t, span2.Tags, 2)
+	assert.Empty(t, span2.Logs)
+	assert.Empty(t, span2.Process.Tags)
 }
 
 func TestAnonymizer_MapString_Present(t *testing.T) {

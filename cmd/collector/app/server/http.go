@@ -1,16 +1,5 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package server
 
@@ -24,7 +13,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/handler"
-	"github.com/jaegertracing/jaeger/cmd/collector/app/sampling/strategystore"
+	"github.com/jaegertracing/jaeger/cmd/collector/app/sampling/samplingstrategy"
 	clientcfgHandler "github.com/jaegertracing/jaeger/pkg/clientcfg/clientcfghttp"
 	"github.com/jaegertracing/jaeger/pkg/config/tlscfg"
 	"github.com/jaegertracing/jaeger/pkg/healthcheck"
@@ -35,13 +24,13 @@ import (
 
 // HTTPServerParams to construct a new Jaeger Collector HTTP Server
 type HTTPServerParams struct {
-	TLSConfig      tlscfg.Options
-	HostPort       string
-	Handler        handler.JaegerBatchesHandler
-	SamplingStore  strategystore.StrategyStore
-	MetricsFactory metrics.Factory
-	HealthCheck    *healthcheck.HealthCheck
-	Logger         *zap.Logger
+	TLSConfig        tlscfg.Options
+	HostPort         string
+	Handler          handler.JaegerBatchesHandler
+	SamplingProvider samplingstrategy.Provider
+	MetricsFactory   metrics.Factory
+	HealthCheck      *healthcheck.HealthCheck
+	Logger           *zap.Logger
 
 	// ReadTimeout sets the respective parameter of http.Server
 	ReadTimeout time.Duration
@@ -88,7 +77,7 @@ func serveHTTP(server *http.Server, listener net.Listener, params *HTTPServerPar
 
 	cfgHandler := clientcfgHandler.NewHTTPHandler(clientcfgHandler.HTTPHandlerParams{
 		ConfigManager: &clientcfgHandler.ConfigManager{
-			SamplingStrategyStore: params.SamplingStore,
+			SamplingProvider: params.SamplingProvider,
 			// TODO provide baggage manager
 		},
 		MetricsFactory:         params.MetricsFactory,

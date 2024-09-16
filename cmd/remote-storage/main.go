@@ -1,16 +1,5 @@
 // Copyright (c) 2022 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -24,13 +13,15 @@ import (
 	_ "go.uber.org/automaxprocs"
 	"go.uber.org/zap"
 
-	"github.com/jaegertracing/jaeger/cmd/docs"
-	"github.com/jaegertracing/jaeger/cmd/env"
-	"github.com/jaegertracing/jaeger/cmd/flags"
+	"github.com/jaegertracing/jaeger/cmd/internal/docs"
+	"github.com/jaegertracing/jaeger/cmd/internal/env"
+	"github.com/jaegertracing/jaeger/cmd/internal/flags"
+	"github.com/jaegertracing/jaeger/cmd/internal/printconfig"
+	"github.com/jaegertracing/jaeger/cmd/internal/status"
 	"github.com/jaegertracing/jaeger/cmd/remote-storage/app"
-	"github.com/jaegertracing/jaeger/cmd/status"
 	"github.com/jaegertracing/jaeger/pkg/config"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
+	"github.com/jaegertracing/jaeger/pkg/telemetery"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/pkg/version"
 	"github.com/jaegertracing/jaeger/plugin/storage"
@@ -56,7 +47,7 @@ func main() {
 		Use:   serviceName,
 		Short: serviceName + " allows sharing single-node storage implementations like memstore or Badger.",
 		Long:  serviceName + ` allows sharing single-node storage implementations like memstore or Badger. It implements Jaeger Remote Storage gRPC API.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ /* args */ []string) error {
 			if err := svc.Start(v); err != nil {
 				return err
 			}
@@ -76,16 +67,14 @@ func main() {
 			}
 
 			tm := tenancy.NewManager(&opts.Tenancy)
-			server, err := app.NewServer(opts, storageFactory, tm, svc.Logger)
+			telset := telemetery.Setting{
+				Logger:       svc.Logger,
+				ReportStatus: telemetery.HCAdapter(svc.HC()),
+			}
+			server, err := app.NewServer(opts, storageFactory, tm, telset)
 			if err != nil {
 				logger.Fatal("Failed to create server", zap.Error(err))
 			}
-
-			go func() {
-				for s := range server.HealthCheckStatus() {
-					svc.SetHealthCheckStatus(s)
-				}
-			}()
 
 			if err := server.Start(); err != nil {
 				logger.Fatal("Could not start servers", zap.Error(err))
@@ -105,6 +94,7 @@ func main() {
 	command.AddCommand(env.Command())
 	command.AddCommand(docs.Command(v))
 	command.AddCommand(status.Command(v, ports.QueryAdminHTTP))
+	command.AddCommand(printconfig.Command(v))
 
 	config.AddFlags(
 		v,

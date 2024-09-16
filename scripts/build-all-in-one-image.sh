@@ -1,16 +1,81 @@
 #!/bin/bash
 
-set -exu
+# Copyright (c) 2024 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
 
-BRANCH=${BRANCH:?'missing BRANCH env var'}
+set -euf -o pipefail
+
+print_help() {
+  echo "Usage: $0 [-b binary] [-D] [-h] [-l] [-o] [-p platforms] <jaeger_version>"
+  echo "  -D: Disable building of images with debugger"
+  echo "  -h: Print help"
+  echo "  -l: Enable local-only mode that only pushes images to local registry"
+  echo "  -o: overwrite image in the target remote repository even if the semver tag already exists"
+  echo "  -p: Comma-separated list of platforms to build for (default: all supported)"
+  echo "  jaeger_version:  major version, v1 | v2"
+  exit 1
+}
+
+add_debugger='Y'
+platforms="$(make echo-linux-platforms)"
+FLAGS=()
+
+while getopts "Dhlop:" opt; do
+	case "${opt}" in
+	D)
+		add_debugger='N'
+		;;
+	l)
+		# in the local-only mode the images will only be pushed to local registry
+		FLAGS=("${FLAGS[@]}" -l)
+		;;
+	o)
+		FLAGS=("${FLAGS[@]}" -o)
+		;;
+	p)
+		platforms=${OPTARG}
+		;;
+	?)
+		print_help
+		;;
+	esac
+done
+
+# remove flags, leave only positional args
+shift $((OPTIND - 1))
+
+if [[ $# -eq 0 ]]; then
+  echo "Jaeger major version is required as argument"
+  print_help
+fi
+
+case $1 in
+  v1)
+    BINARY='all-in-one'
+    export HEALTHCHECK_V2=false
+    ;;
+  v2)
+    BINARY='jaeger'
+    export HEALTHCHECK_V2=true
+    ;;
+  *)
+    echo "Jaeger major version is required as argument"
+    print_help
+esac
+
+set -x
+
 # Set default GOARCH variable to the host GOARCH, the target architecture can
 # be overrided by passing architecture value to the script:
 # `GOARCH=<target arch> ./scripts/build-all-in-one-image.sh`.
 GOARCH=${GOARCH:-$(go env GOARCH)}
+repo="jaegertracing/${BINARY}"
 
-expected_version="v16"
+# verify Node.js version
+expected_version="v$(cat jaeger-ui/.nvmrc)"
 version=$(node --version)
 major_version=${version%.*.*}
+
 if [ "$major_version" = "$expected_version" ] ; then
   echo "Node version is as expected: $version"
 else
@@ -21,35 +86,50 @@ fi
 make build-ui
 
 run_integration_test() {
-  CID=$(docker run -d -p 16686:16686 -p 5778:5778 $1:latest)
+  local image_name="$1"
+  CID=$(docker run -d -p 16686:16686 -p 5778:5778 -p13133:13133 "${image_name}:${GITHUB_SHA}")
+
   if ! make all-in-one-integration-test ; then
       echo "---- integration test failed unexpectedly ----"
       echo "--- check the docker log below for details ---"
-      docker logs $CID
+      echo "::group::docker logs"
+        docker logs "$CID"
+      echo "::endgroup::"
+      docker kill "$CID"
       exit 1
   fi
-  docker kill $CID
+  docker kill "$CID"
 }
 
-make create-baseimg-debugimg
+# Loop through each platform (separated by commas)
+for platform in $(echo "$platforms" | tr ',' ' '); do
+  arch=${platform##*/}  # Remove everything before the last slash
+  make "build-${BINARY}" GOOS=linux GOARCH="${arch}"
+done
 
-make build-all-in-one GOOS=linux GOARCH=amd64
-make build-all-in-one GOOS=linux GOARCH=s390x
-make build-all-in-one GOOS=linux GOARCH=ppc64le
-make build-all-in-one GOOS=linux GOARCH=arm64
-platforms="linux/amd64,linux/s390x,linux/ppc64le,linux/arm64"
-repo=jaegertracing/all-in-one
-#build all-in-one image locally for integration test
-bash scripts/build-upload-a-docker-image.sh -l -b -c all-in-one -d cmd/all-in-one -p "${platforms}" -t release
-run_integration_test localhost:5000/$repo
-#build all-in-one image and upload to dockerhub/quay.io
-bash scripts/build-upload-a-docker-image.sh -b -c all-in-one -d cmd/all-in-one -p "${platforms}" -t release
+baseimg_target='create-baseimg-debugimg'
+if [[ "${add_debugger}" == "N" ]]; then
+  baseimg_target='create-baseimg'
+fi
+make "$baseimg_target" LINUX_PLATFORMS="$platforms"
 
+# build all-in-one image locally for integration test (the explicit -l switch)
+bash scripts/build-upload-a-docker-image.sh -l -b -c "${BINARY}" -d "cmd/${BINARY}" -p "${platforms}" -t release
 
-make build-all-in-one-debug GOOS=linux GOARCH=$GOARCH
-repo=${repo}-debug
-#build all-in-one-debug image locally for integration test
-bash scripts/build-upload-a-docker-image.sh -l -b -c all-in-one-debug -d cmd/all-in-one -t debug
-run_integration_test localhost:5000/$repo
-#build all-in-one-debug image and upload to dockerhub/quay.io
-bash scripts/build-upload-a-docker-image.sh -b -c all-in-one-debug -d cmd/all-in-one -t debug
+run_integration_test "localhost:5000/$repo"
+
+# build all-in-one image and upload to dockerhub/quay.io
+bash scripts/build-upload-a-docker-image.sh "${FLAGS[@]}" -b -c "${BINARY}" -d "cmd/${BINARY}" -p "${platforms}" -t release
+
+# build debug image if requested
+if [[ "${add_debugger}" == "Y" ]]; then
+  make "build-${BINARY}" GOOS=linux GOARCH="$GOARCH" DEBUG_BINARY=1
+  repo="${repo}-debug"
+
+  # build locally for integration test (the -l switch)
+  bash scripts/build-upload-a-docker-image.sh -l -b -c "${BINARY}-debug" -d "cmd/${BINARY}" -t debug
+  run_integration_test "localhost:5000/$repo"
+
+  # build & upload official image
+  bash scripts/build-upload-a-docker-image.sh "${FLAGS[@]}" -b -c "${BINARY}-debug" -d "cmd/${BINARY}" -t debug
+fi

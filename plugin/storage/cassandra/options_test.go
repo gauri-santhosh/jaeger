@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package cassandra
 
@@ -64,10 +53,16 @@ func TestOptionsWithFlags(t *testing.T) {
 		"--cas.index.tag-whitelist=flerg, flarg,florg ",
 		"--cas.index.tags=true",
 		"--cas.index.process-tags=false",
+		"--cas.basic.allowed-authenticators=org.apache.cassandra.auth.PasswordAuthenticator,com.datastax.bdp.cassandra.auth.DseAuthenticator",
+		"--cas.username=username",
+		"--cas.password=password",
 		// enable aux with a couple overrides
 		"--cas-aux.enabled=true",
 		"--cas-aux.keyspace=jaeger-archive",
 		"--cas-aux.servers=3.3.3.3, 4.4.4.4",
+		"--cas-aux.username=username",
+		"--cas-aux.password=password",
+		"--cas-aux.basic.allowed-authenticators=org.apache.cassandra.auth.PasswordAuthenticator,com.ericsson.bss.cassandra.ecaudit.auth.AuditAuthenticator",
 	})
 	opts.InitFromViper(v)
 
@@ -75,17 +70,19 @@ func TestOptionsWithFlags(t *testing.T) {
 	assert.Equal(t, "jaeger", primary.Keyspace)
 	assert.Equal(t, "mojave", primary.LocalDC)
 	assert.Equal(t, []string{"1.1.1.1", "2.2.2.2"}, primary.Servers)
+	assert.Equal(t, []string{"org.apache.cassandra.auth.PasswordAuthenticator", "com.datastax.bdp.cassandra.auth.DseAuthenticator"}, primary.Authenticator.Basic.AllowedAuthenticators)
 	assert.Equal(t, "ONE", primary.Consistency)
 	assert.Equal(t, []string{"blerg", "blarg", "blorg"}, opts.TagIndexBlacklist())
 	assert.Equal(t, []string{"flerg", "flarg", "florg"}, opts.TagIndexWhitelist())
-	assert.Equal(t, true, opts.Index.Tags)
-	assert.Equal(t, false, opts.Index.ProcessTags)
-	assert.Equal(t, true, opts.Index.Logs)
+	assert.True(t, opts.Index.Tags)
+	assert.False(t, opts.Index.ProcessTags)
+	assert.True(t, opts.Index.Logs)
 
 	aux := opts.Get("cas-aux")
 	require.NotNil(t, aux)
 	assert.Equal(t, "jaeger-archive", aux.Keyspace)
 	assert.Equal(t, []string{"3.3.3.3", "4.4.4.4"}, aux.Servers)
+	assert.Equal(t, []string{"org.apache.cassandra.auth.PasswordAuthenticator", "com.ericsson.bss.cassandra.ecaudit.auth.AuditAuthenticator"}, aux.Authenticator.Basic.AllowedAuthenticators)
 	assert.Equal(t, 42, aux.ConnectionsPerHost)
 	assert.Equal(t, 42, aux.MaxRetryAttempts)
 	assert.Equal(t, 42*time.Second, aux.Timeout)
@@ -105,7 +102,7 @@ func TestDefaultTlsHostVerify(t *testing.T) {
 	opts.InitFromViper(v)
 
 	primary := opts.GetPrimary()
-	assert.Equal(t, false, primary.TLS.SkipHostVerify)
+	assert.False(t, primary.TLS.SkipHostVerify)
 }
 
 func TestEmptyBlackWhiteLists(t *testing.T) {
@@ -114,6 +111,6 @@ func TestEmptyBlackWhiteLists(t *testing.T) {
 	command.ParseFlags([]string{})
 	opts.InitFromViper(v)
 
-	assert.Len(t, opts.TagIndexBlacklist(), 0)
-	assert.Len(t, opts.TagIndexWhitelist(), 0)
+	assert.Empty(t, opts.TagIndexBlacklist())
+	assert.Empty(t, opts.TagIndexWhitelist())
 }

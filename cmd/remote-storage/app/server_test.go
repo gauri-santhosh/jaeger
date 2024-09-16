@@ -1,39 +1,29 @@
 // Copyright (c) 2022 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/jaegertracing/jaeger/cmd/flags"
+	"github.com/jaegertracing/jaeger/cmd/internal/flags"
 	"github.com/jaegertracing/jaeger/internal/grpctest"
 	"github.com/jaegertracing/jaeger/pkg/config/tlscfg"
 	"github.com/jaegertracing/jaeger/pkg/healthcheck"
+	"github.com/jaegertracing/jaeger/pkg/telemetery"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/ports"
 	"github.com/jaegertracing/jaeger/proto-gen/storage_v1"
@@ -52,13 +42,16 @@ func TestNewServer_CreateStorageErrors(t *testing.T) {
 	factory.On("CreateSpanWriter").Return(nil, nil)
 	factory.On("CreateDependencyReader").Return(nil, errors.New("no deps")).Once()
 	factory.On("CreateDependencyReader").Return(nil, nil)
-
+	telset := telemetery.Setting{
+		Logger:       zap.NewNop(),
+		ReportStatus: func(*componentstatus.Event) {},
+	}
 	f := func() (*Server, error) {
 		return NewServer(
 			&Options{GRPCHostPort: ":0"},
 			factory,
 			tenancy.NewManager(&tenancy.Options{}),
-			zap.NewNop(),
+			telset,
 		)
 	}
 	_, err := f()
@@ -77,10 +70,9 @@ func TestNewServer_CreateStorageErrors(t *testing.T) {
 	require.NoError(t, err)
 	err = s.Start()
 	require.NoError(t, err)
-	validateGRPCServer(t, s.grpcConn.Addr().String(), s.grpcServer)
+	validateGRPCServer(t, s.grpcConn.Addr().String())
 
 	s.grpcConn.Close() // causes logged error
-	<-s.HealthCheckStatus()
 }
 
 func TestServerStart_BadPortErrors(t *testing.T) {
@@ -89,7 +81,7 @@ func TestServerStart_BadPortErrors(t *testing.T) {
 			GRPCHostPort: ":-1",
 		},
 	}
-	assert.Error(t, srv.Start())
+	require.Error(t, srv.Start())
 }
 
 type storageMocks struct {
@@ -124,12 +116,16 @@ func TestNewServer_TLSConfigError(t *testing.T) {
 		KeyPath:      "invalid/path",
 		ClientCAPath: "invalid/path",
 	}
+	telset := telemetery.Setting{
+		Logger:       zap.NewNop(),
+		ReportStatus: telemetery.HCAdapter(healthcheck.New()),
+	}
 	storageMocks := newStorageMocks()
 	_, err := NewServer(
 		&Options{GRPCHostPort: ":8081", TLSGRPC: tlsCfg},
 		storageMocks.factory,
 		tenancy.NewManager(&tenancy.Options{}),
-		zap.NewNop(),
+		telset,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid TLS config")
@@ -145,7 +141,12 @@ func TestCreateGRPCHandler(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writer error")
 
-	storageMocks.depReader.On("GetDependencies", mock.Anything, mock.Anything).Return(nil, errors.New("deps error"))
+	storageMocks.depReader.On(
+		"GetDependencies",
+		mock.Anything, // context
+		mock.Anything, // time
+		mock.Anything, // lookback
+	).Return(nil, errors.New("deps error"))
 	_, err = h.GetDependencies(context.Background(), &storage_v1.GetDependenciesRequest{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deps error")
@@ -294,9 +295,6 @@ type grpcClient struct {
 }
 
 func newGRPCClient(t *testing.T, addr string, creds credentials.TransportCredentials, tm *tenancy.Manager) *grpcClient {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
 	dialOpts := []grpc.DialOption{
 		grpc.WithUnaryInterceptor(tenancy.NewClientUnaryInterceptor(tm)),
 	}
@@ -306,7 +304,7 @@ func newGRPCClient(t *testing.T, addr string, creds credentials.TransportCredent
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	conn, err := grpc.DialContext(ctx, addr, dialOpts...)
+	conn, err := grpc.NewClient(addr, dialOpts...)
 	require.NoError(t, err)
 
 	return &grpcClient{
@@ -322,6 +320,8 @@ func TestServerGRPCTLS(t *testing.T) {
 				GRPCHostPort: ":0",
 				TLSGRPC:      test.TLS,
 			}
+			defer serverOptions.TLSGRPC.Close()
+			defer test.clientTLS.Close()
 			flagsSvc := flags.NewService(ports.QueryAdminHTTP)
 			flagsSvc.Logger = zap.NewNop()
 
@@ -330,27 +330,18 @@ func TestServerGRPCTLS(t *testing.T) {
 			storageMocks.reader.On("GetServices", mock.AnythingOfType("*context.valueCtx")).Return(expectedServices, nil)
 
 			tm := tenancy.NewManager(&tenancy.Options{Enabled: true})
+			telset := telemetery.Setting{
+				Logger:       flagsSvc.Logger,
+				ReportStatus: telemetery.HCAdapter(flagsSvc.HC()),
+			}
 			server, err := NewServer(
 				serverOptions,
 				storageMocks.factory,
 				tm,
-				flagsSvc.Logger,
+				telset,
 			)
-			assert.Nil(t, err)
-			assert.NoError(t, server.Start())
-
-			var wg sync.WaitGroup
-			wg.Add(1)
-			once := sync.Once{}
-
-			go func() {
-				for s := range server.HealthCheckStatus() {
-					flagsSvc.HC().Set(s)
-					if s == healthcheck.Unavailable {
-						once.Do(wg.Done)
-					}
-				}
-			}()
+			require.NoError(t, err)
+			require.NoError(t, server.Start())
 
 			var clientError error
 			var client *grpcClient
@@ -376,9 +367,8 @@ func TestServerGRPCTLS(t *testing.T) {
 				require.NoError(t, clientError)
 				assert.Equal(t, expectedServices, res.Services)
 			}
-			require.Nil(t, client.conn.Close())
+			require.NoError(t, client.conn.Close())
 			server.Close()
-			wg.Wait()
 			assert.Equal(t, healthcheck.Unavailable, flagsSvc.HC().Get())
 		})
 	}
@@ -389,16 +379,19 @@ func TestServerHandlesPortZero(t *testing.T) {
 	zapCore, logs := observer.New(zap.InfoLevel)
 	flagsSvc.Logger = zap.New(zapCore)
 	storageMocks := newStorageMocks()
-
+	telset := telemetery.Setting{
+		Logger:       flagsSvc.Logger,
+		ReportStatus: telemetery.HCAdapter(flagsSvc.HC()),
+	}
 	server, err := NewServer(
 		&Options{GRPCHostPort: ":0"},
 		storageMocks.factory,
 		tenancy.NewManager(&tenancy.Options{}),
-		flagsSvc.Logger,
+		telset,
 	)
-	require.Nil(t, err)
+	require.NoError(t, err)
+
 	require.NoError(t, server.Start())
-	defer server.Close()
 
 	const line = "Starting GRPC server"
 	message := logs.FilterMessage(line)
@@ -406,13 +399,16 @@ func TestServerHandlesPortZero(t *testing.T) {
 
 	onlyEntry := message.All()[0]
 	hostPort := onlyEntry.ContextMap()["addr"].(string)
-	validateGRPCServer(t, hostPort, server.grpcServer)
+	validateGRPCServer(t, hostPort)
+
+	server.Close()
+
+	assert.Equal(t, healthcheck.Unavailable, flagsSvc.HC().Get())
 }
 
-func validateGRPCServer(t *testing.T, hostPort string, server *grpc.Server) {
+func validateGRPCServer(t *testing.T, hostPort string) {
 	grpctest.ReflectionServiceValidator{
 		HostPort: hostPort,
-		Server:   server,
 		ExpectedServices: []string{
 			"jaeger.storage.v1.SpanReaderPlugin",
 			"jaeger.storage.v1.SpanWriterPlugin",
@@ -421,7 +417,7 @@ func validateGRPCServer(t *testing.T, hostPort string, server *grpc.Server) {
 			"jaeger.storage.v1.ArchiveSpanReaderPlugin",
 			"jaeger.storage.v1.ArchiveSpanWriterPlugin",
 			"jaeger.storage.v1.StreamingSpanWriterPlugin",
-			// "grpc.health.v1.Health",
+			"grpc.health.v1.Health",
 		},
 	}.Execute(t)
 }

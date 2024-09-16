@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -20,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,15 +17,16 @@ import (
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/gorilla/mux"
-	"github.com/opentracing-contrib/go-stdlib/nethttp"
-	"github.com/opentracing/opentracing-go"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
 	"github.com/jaegertracing/jaeger/model"
 	uiconv "github.com/jaegertracing/jaeger/model/converter/json"
 	ui "github.com/jaegertracing/jaeger/model/json"
-	"github.com/jaegertracing/jaeger/pkg/multierror"
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/plugin/metrics/disabled"
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2/metrics"
@@ -62,7 +53,7 @@ type HTTPHandler interface {
 }
 
 type structuredResponse struct {
-	Data   interface{}       `json:"data"`
+	Data   any               `json:"data"`
 	Total  int               `json:"total"`
 	Limit  int               `json:"limit"`
 	Offset int               `json:"offset"`
@@ -89,7 +80,7 @@ type APIHandler struct {
 	basePath            string
 	apiPrefix           string
 	logger              *zap.Logger
-	tracer              opentracing.Tracer
+	tracer              trace.TracerProvider
 }
 
 // NewAPIHandler returns an APIHandler
@@ -113,7 +104,7 @@ func NewAPIHandler(queryService *querysvc.QueryService, tm *tenancy.Manager, opt
 		aH.logger = zap.NewNop()
 	}
 	if aH.tracer == nil {
-		aH.tracer = opentracing.NoopTracer{}
+		aH.tracer = jtracer.NoOp().OTEL
 	}
 	return aH
 }
@@ -128,6 +119,7 @@ func (aH *APIHandler) RegisterRoutes(router *mux.Router) {
 	aH.handleFunc(router, aH.getOperations, "/operations").Methods(http.MethodGet)
 	// TODO - remove this when UI catches up
 	aH.handleFunc(router, aH.getOperationsLegacy, "/services/{%s}/operations", serviceParam).Methods(http.MethodGet)
+	aH.handleFunc(router, aH.transformOTLP, "/transform").Methods(http.MethodPost)
 	aH.handleFunc(router, aH.dependencies, "/dependencies").Methods(http.MethodGet)
 	aH.handleFunc(router, aH.latencies, "/metrics/latencies").Methods(http.MethodGet)
 	aH.handleFunc(router, aH.calls, "/metrics/calls").Methods(http.MethodGet)
@@ -138,26 +130,23 @@ func (aH *APIHandler) RegisterRoutes(router *mux.Router) {
 func (aH *APIHandler) handleFunc(
 	router *mux.Router,
 	f func(http.ResponseWriter, *http.Request),
-	route string,
-	args ...interface{},
+	routeFmt string,
+	args ...any,
 ) *mux.Route {
-	route = aH.route(route, args...)
-	var handler http.Handler
-	handler = http.HandlerFunc(f)
+	route := aH.formatRoute(routeFmt, args...)
+	var handler http.Handler = http.HandlerFunc(f)
 	if aH.tenancyMgr.Enabled {
 		handler = tenancy.ExtractTenantHTTPHandler(aH.tenancyMgr, handler)
 	}
-	traceMiddleware := nethttp.Middleware(
-		aH.tracer,
-		handler,
-		nethttp.OperationNameFunc(func(r *http.Request) string {
-			return route
-		}))
+	traceMiddleware := otelhttp.NewHandler(
+		otelhttp.WithRouteTag(route, traceResponseHandler(handler)),
+		route,
+		otelhttp.WithTracerProvider(aH.tracer))
 	return router.HandleFunc(route, traceMiddleware.ServeHTTP)
 }
 
-func (aH *APIHandler) route(route string, args ...interface{}) string {
-	args = append([]interface{}{aH.apiPrefix}, args...)
+func (aH *APIHandler) formatRoute(route string, args ...any) string {
+	args = append([]any{aH.apiPrefix}, args...)
 	return fmt.Sprintf("/%s"+route, args...)
 }
 
@@ -194,6 +183,22 @@ func (aH *APIHandler) getOperationsLegacy(w http.ResponseWriter, r *http.Request
 		Total: len(operationNames),
 	}
 	aH.writeJSON(w, r, &structuredRes)
+}
+
+func (aH *APIHandler) transformOTLP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if aH.handleError(w, err, http.StatusBadRequest) {
+		return
+	}
+
+	traces, err := otlp2traces(body)
+	if aH.handleError(w, err, http.StatusInternalServerError) {
+		return
+	}
+
+	var uiErrors []structuredError
+	structuredRes := aH.tracesToResponse(traces, false, uiErrors)
+	aH.writeJSON(w, r, structuredRes)
 }
 
 func (aH *APIHandler) getOperations(w http.ResponseWriter, r *http.Request) {
@@ -246,31 +251,35 @@ func (aH *APIHandler) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	uiTraces := make([]*ui.Trace, len(tracesFromStorage))
-	for i, v := range tracesFromStorage {
-		uiTrace, uiErr := aH.convertModelToUI(v, true)
+	structuredRes := aH.tracesToResponse(tracesFromStorage, true, uiErrors)
+	aH.writeJSON(w, r, structuredRes)
+}
+
+func (aH *APIHandler) tracesToResponse(traces []*model.Trace, adjust bool, uiErrors []structuredError) *structuredResponse {
+	uiTraces := make([]*ui.Trace, len(traces))
+	for i, v := range traces {
+		uiTrace, uiErr := aH.convertModelToUI(v, adjust)
 		if uiErr != nil {
 			uiErrors = append(uiErrors, *uiErr)
 		}
 		uiTraces[i] = uiTrace
 	}
 
-	structuredRes := structuredResponse{
+	return &structuredResponse{
 		Data:   uiTraces,
 		Errors: uiErrors,
 	}
-	aH.writeJSON(w, r, &structuredRes)
 }
 
 func (aH *APIHandler) tracesByIDs(ctx context.Context, traceIDs []model.TraceID) ([]*model.Trace, []structuredError, error) {
-	var errors []structuredError
+	var traceErrors []structuredError
 	retMe := make([]*model.Trace, 0, len(traceIDs))
 	for _, traceID := range traceIDs {
 		if trace, err := aH.queryService.GetTrace(ctx, traceID); err != nil {
-			if err != spanstore.ErrTraceNotFound {
+			if !errors.Is(err, spanstore.ErrTraceNotFound) {
 				return nil, nil, err
 			}
-			errors = append(errors, structuredError{
+			traceErrors = append(traceErrors, structuredError{
 				Msg:     err.Error(),
 				TraceID: ui.TraceID(traceID.String()),
 			})
@@ -278,7 +287,7 @@ func (aH *APIHandler) tracesByIDs(ctx context.Context, traceIDs []model.TraceID)
 			retMe = append(retMe, trace)
 		}
 	}
-	return retMe, errors, nil
+	return retMe, traceErrors, nil
 }
 
 func (aH *APIHandler) dependencies(w http.ResponseWriter, r *http.Request) {
@@ -355,17 +364,17 @@ func (aH *APIHandler) metrics(w http.ResponseWriter, r *http.Request, getMetrics
 }
 
 func (aH *APIHandler) convertModelToUI(trace *model.Trace, adjust bool) (*ui.Trace, *structuredError) {
-	var errors []error
+	var errs []error
 	if adjust {
 		var err error
 		trace, err = aH.queryService.Adjust(trace)
 		if err != nil {
-			errors = append(errors, err)
+			errs = append(errs, err)
 		}
 	}
 	uiTrace := uiconv.FromDomain(trace)
 	var uiError *structuredError
-	if err := multierror.Wrap(errors); err != nil {
+	if err := errors.Join(errs...); err != nil {
 		uiError = &structuredError{
 			Msg:     err.Error(),
 			TraceID: uiTrace.TraceID,
@@ -374,7 +383,7 @@ func (aH *APIHandler) convertModelToUI(trace *model.Trace, adjust bool) (*ui.Tra
 	return uiTrace, uiError
 }
 
-func (aH *APIHandler) deduplicateDependencies(dependencies []model.DependencyLink) []ui.DependencyLink {
+func (*APIHandler) deduplicateDependencies(dependencies []model.DependencyLink) []ui.DependencyLink {
 	type Key struct {
 		parent string
 		child  string
@@ -393,7 +402,7 @@ func (aH *APIHandler) deduplicateDependencies(dependencies []model.DependencyLin
 	return result
 }
 
-func (aH *APIHandler) filterDependenciesByService(
+func (*APIHandler) filterDependenciesByService(
 	dependencies []model.DependencyLink,
 	service string,
 ) []model.DependencyLink {
@@ -430,7 +439,7 @@ func (aH *APIHandler) getTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trace, err := aH.queryService.GetTrace(r.Context(), traceID)
-	if err == spanstore.ErrTraceNotFound {
+	if errors.Is(err, spanstore.ErrTraceNotFound) {
 		aH.handleError(w, err, http.StatusNotFound)
 		return
 	}
@@ -439,18 +448,8 @@ func (aH *APIHandler) getTrace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var uiErrors []structuredError
-	uiTrace, uiErr := aH.convertModelToUI(trace, shouldAdjust(r))
-	if uiErr != nil {
-		uiErrors = append(uiErrors, *uiErr)
-	}
-
-	structuredRes := structuredResponse{
-		Data: []*ui.Trace{
-			uiTrace,
-		},
-		Errors: uiErrors,
-	}
-	aH.writeJSON(w, r, &structuredRes)
+	structuredRes := aH.tracesToResponse([]*model.Trace{trace}, shouldAdjust(r), uiErrors)
+	aH.writeJSON(w, r, structuredRes)
 }
 
 func shouldAdjust(r *http.Request) bool {
@@ -469,7 +468,7 @@ func (aH *APIHandler) archiveTrace(w http.ResponseWriter, r *http.Request) {
 
 	// QueryService.ArchiveTrace can now archive this traceID.
 	err := aH.queryService.ArchiveTrace(r.Context(), traceID)
-	if err == spanstore.ErrTraceNotFound {
+	if errors.Is(err, spanstore.ErrTraceNotFound) {
 		aH.handleError(w, err, http.StatusNotFound)
 		return
 	}
@@ -507,7 +506,7 @@ func (aH *APIHandler) handleError(w http.ResponseWriter, err error, statusCode i
 	return true
 }
 
-func (aH *APIHandler) writeJSON(w http.ResponseWriter, r *http.Request, response interface{}) {
+func (aH *APIHandler) writeJSON(w http.ResponseWriter, r *http.Request, response any) {
 	prettyPrintValue := r.FormValue(prettyPrintParam)
 	prettyPrint := prettyPrintValue != "" && prettyPrintValue != "false"
 
@@ -523,4 +522,19 @@ func (aH *APIHandler) writeJSON(w http.ResponseWriter, r *http.Request, response
 	if err := marshal(w, response); err != nil {
 		aH.handleError(w, fmt.Errorf("failed writing HTTP response: %w", err), http.StatusInternalServerError)
 	}
+}
+
+// Returns a handler that generates a traceresponse header.
+// https://github.com/w3c/trace-context/blob/main/spec/21-http_response_header_format.md
+func traceResponseHandler(handler http.Handler) http.Handler {
+	// We use the standard TraceContext propagator, since the formats are identical.
+	// But the propagator uses "traceparent" header name, so we inject it into a map
+	// `carrier` and then use the result to set the "tracereponse" header.
+	var prop propagation.TraceContext
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		carrier := make(map[string]string)
+		prop.Inject(r.Context(), propagation.MapCarrier(carrier))
+		w.Header().Add("traceresponse", carrier["traceparent"])
+		handler.ServeHTTP(w, r)
+	})
 }

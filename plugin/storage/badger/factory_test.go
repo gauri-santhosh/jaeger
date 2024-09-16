@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package badger
 
@@ -22,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	assert "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/internal/metricstest"
@@ -46,7 +36,7 @@ func TestInitializationErrors(t *testing.T) {
 	f.InitFromViper(v, zap.NewNop())
 
 	err := f.Initialize(metrics.NullFactory, zap.NewNop())
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestForCodecov(t *testing.T) {
@@ -56,25 +46,29 @@ func TestForCodecov(t *testing.T) {
 	f.InitFromViper(v, zap.NewNop())
 
 	err := f.Initialize(metrics.NullFactory, zap.NewNop())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Get all the writers, readers, etc
 	_, err = f.CreateSpanReader()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, err = f.CreateSpanWriter()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, err = f.CreateDependencyReader()
-	assert.NoError(t, err)
+	require.NoError(t, err)
+
+	lock, err := f.CreateLock()
+	require.NoError(t, err)
+	assert.NotNil(t, lock)
 
 	// Now, remove the badger directories
 	err = os.RemoveAll(f.tmpDir)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Now try to close, since the files have been deleted this should throw an error
 	err = f.Close()
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestMaintenanceRun(t *testing.T) {
@@ -89,7 +83,7 @@ func TestMaintenanceRun(t *testing.T) {
 	// Safeguard
 	mFactory := metricstest.NewFactory(0)
 	_, gs := mFactory.Snapshot()
-	assert.True(t, gs[lastMaintenanceRunName] == 0)
+	assert.Equal(t, int64(0), gs[lastMaintenanceRunName])
 	f.Initialize(mFactory, zap.NewNop())
 
 	waiter := func(previousValue int64) int64 {
@@ -101,7 +95,7 @@ func TestMaintenanceRun(t *testing.T) {
 			sleeps++
 			_, gs = mFactory.Snapshot()
 		}
-		assert.True(t, gs[lastMaintenanceRunName] > previousValue)
+		assert.Greater(t, gs[lastMaintenanceRunName], previousValue)
 		return gs[lastMaintenanceRunName]
 	}
 
@@ -109,16 +103,16 @@ func TestMaintenanceRun(t *testing.T) {
 
 	// This is to for codecov only. Can break without anything else breaking as it does test badger's
 	// internal implementation
-	vlogSize := expvar.Get("badger_v3_vlog_size_bytes").(*expvar.Map).Get(f.tmpDir).(*expvar.Int)
+	vlogSize := expvar.Get("badger_size_bytes_vlog").(*expvar.Map).Get(f.tmpDir).(*expvar.Int)
 	currSize := vlogSize.Value()
 	vlogSize.Set(currSize + 1<<31)
 
 	waiter(runtime)
 	_, gs = mFactory.Snapshot()
-	assert.True(t, gs[lastValueLogCleanedName] > 0)
+	assert.Positive(t, gs[lastValueLogCleanedName])
 
 	err := io.Closer(f).Close()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 // TestMaintenanceCodecov this test is not intended to test anything, but hopefully increase coverage by triggering a log line
@@ -143,13 +137,13 @@ func TestMaintenanceCodecov(t *testing.T) {
 	}
 
 	err := f.store.Close()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	waiter() // This should trigger the logging of error
 }
 
 func TestBadgerMetrics(t *testing.T) {
 	// The expvar is leaking keyparams between tests. We need to clean up a bit..
-	eMap := expvar.Get("badger_v3_lsm_size_bytes").(*expvar.Map)
+	eMap := expvar.Get("badger_size_bytes_lsm").(*expvar.Map)
 	eMap.Init()
 
 	f := NewFactory()
@@ -161,37 +155,61 @@ func TestBadgerMetrics(t *testing.T) {
 	mFactory := metricstest.NewFactory(0)
 	f.Initialize(mFactory, zap.NewNop())
 	assert.NotNil(t, f.metrics.badgerMetrics)
-	_, found := f.metrics.badgerMetrics["badger_v3_memtable_gets_total"]
+	_, found := f.metrics.badgerMetrics["badger_get_num_memtable"]
 	assert.True(t, found)
 
 	waiter := func(previousValue int64) int64 {
 		sleeps := 0
 		_, gs := mFactory.Snapshot()
-		for gs["badger_v3_memtable_gets_total"] == previousValue && sleeps < 8 {
+		for gs["badger_get_num_memtable"] == previousValue && sleeps < 8 {
 			// Wait for the scheduler
 			time.Sleep(time.Duration(50) * time.Millisecond)
 			sleeps++
 			_, gs = mFactory.Snapshot()
 		}
-		assert.True(t, gs["badger_v3_memtable_gets_total"] == previousValue)
-		return gs["badger_v3_memtable_gets_total"]
+		assert.Equal(t, gs["badger_get_num_memtable"], previousValue)
+		return gs["badger_get_num_memtable"]
 	}
 
 	vlogSize := waiter(0)
 	_, gs := mFactory.Snapshot()
-	assert.True(t, vlogSize == 0)
-	assert.True(t, gs["badger_v3_memtable_gets_total"] == 0) // IntVal metric
+	assert.EqualValues(t, 0, vlogSize)
+	assert.EqualValues(t, int64(0), gs["badger_get_num_memtable"]) // IntVal metric
 
-	_, found = gs["badger_v3_lsm_size_bytes"] // Map metric
+	_, found = gs["badger_size_bytes_lsm"] // Map metric
 	assert.True(t, found)
 
 	err := f.Close()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
-func TestInitFromOptions(t *testing.T) {
+func TestConfigure(t *testing.T) {
 	f := NewFactory()
-	opts := Options{}
-	f.InitFromOptions(opts)
-	assert.Equal(t, &opts, f.Options)
+	config := &Config{
+		MaintenanceInterval: 42 * time.Second,
+	}
+	f.configure(config)
+	assert.Equal(t, config, f.Config)
+}
+
+func TestBadgerStorageFactoryWithConfig(t *testing.T) {
+	cfg := Config{}
+	_, err := NewFactoryWithConfig(cfg, metrics.NullFactory, zap.NewNop())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "Error Creating Dir")
+
+	tmp := os.TempDir()
+	defer os.Remove(tmp)
+	cfg = Config{
+		Directories: Directories{
+			Keys:   tmp,
+			Values: tmp,
+		},
+		Ephemeral:             false,
+		MaintenanceInterval:   5,
+		MetricsUpdateInterval: 10,
+	}
+	factory, err := NewFactoryWithConfig(cfg, metrics.NullFactory, zap.NewNop())
+	require.NoError(t, err)
+	defer factory.Close()
 }

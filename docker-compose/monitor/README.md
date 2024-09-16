@@ -15,7 +15,7 @@ This environment consists the following backend components:
 
 - [MicroSim](https://github.com/yurishkuro/microsim): a program to simulate traces.
 - [Jaeger All-in-one](https://www.jaegertracing.io/docs/1.24/getting-started/#all-in-one): the full Jaeger stack in a single container image.
-- [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/): vendor agnostic integration layer for traces and metrics. Its main role in this particular development environment is to receive Jaeger spans, forward these spans untouched to Jaeger All-in-one while simultaneously aggregating metrics out of this span data. To learn more about span metrics aggregation, please refer to the [spanmetrics processor documentation](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/spanmetricsprocessor).
+- [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/): vendor agnostic integration layer for traces and metrics. Its main role in this particular development environment is to receive Jaeger spans, forward these spans untouched to Jaeger All-in-one while simultaneously aggregating metrics out of this span data. To learn more about span metrics aggregation, please refer to the [spanmetrics connector documentation][spanmetricsconnectorreadme].
 - [Prometheus](https://prometheus.io/): a metrics collection and query engine, used to scrape metrics computed by OpenTelemetry Collector, and presents an API for Jaeger All-in-one to query these metrics.
 - [Grafana](https://grafana.com/): a metrics visualization, analytics & monitoring solution supporting multiple metrics databases.
 
@@ -24,13 +24,54 @@ The following diagram illustrates the relationship between these components:
 
 ![SPM diagram](./diagram.png)
 
+```mermaid
+flowchart LR
+    SDK -->|traces| Receiver
+    Receiver --> MG
+    Receiver --> Batch
+    MG --> ExpMetrics
+    Batch --> ExpTraces
+    ExpMetrics -->|metrics| Prometheus[(Prometheus)]
+    ExpTraces -->|traces| Jaeger[Jaeger
+     Collector]
+    Prometheus -.-> JaegerUI
+    Jaeger --> Storage[(Storage)]
+    Storage -.-> JaegerUI[Jaeger
+     Query
+     and UI]
+
+    style Prometheus fill:red,color:white
+    style Jaeger fill:blue,color:white
+    style JaegerUI fill:blue,color:white
+    style Storage fill:gray,color:white
+
+    subgraph Application
+        SDK[OTel
+         SDK]
+    end
+
+    subgraph OTEL[OTel Collector]
+        Receiver
+        Batch
+        MG[Span
+         Metrics
+         Connector]
+        ExpTraces[Traces
+         Exporter]
+        ExpMetrics[Metrics
+         Exporter]
+    end
+```
+
 # Getting Started
 
-## Bring up/down the dev environment
+## Quickstart
 
-```bash
-docker-compose up
-docker-compose down
+This brings up the system necessary to use the SPM feature locally.
+It uses the latest image tags from both Jaeger and OpenTelemetry.
+
+```shell
+docker compose up
 ```
 
 **Tips:**
@@ -42,46 +83,65 @@ docker-compose down
 **Warning:** The included [docker-compose.yml](./docker-compose.yml) file uses the `latest` version of Jaeger and other components. If your local Docker registry already contains older versions, which may still be tagged as `latest`, you may want to delete those images before running the full set, to ensure consistent behavior:
 
 ```bash
-docker rmi -f jaegertracing/all-in-one:latest
-docker rmi -f otel/opentelemetry-collector-contrib:latest
-docker rmi -f prom/prometheus:latest
-docker rmi -f grafana/grafana:latest
+make clean-all
+```
+
+## Development
+
+These steps allow for running the system necessary for SPM, built from Jaeger's source.
+
+The primary use case is for testing source code changes to the SPM feature locally.
+
+### Build jaeger-all-in-one docker image
+
+```shell
+make build
+```
+
+## Bring up the dev environment
+
+```bash
+make dev
 ```
 
 ## Sending traces
 
-It is possible to send traces to this SPM Development Environment from your own application and viewing their RED metrics.
+We will use [tracegen](https://github.com/jaegertracing/jaeger/tree/main/cmd/tracegen)
+to emit traces to the OpenTelemetry Collector which, in turn, will aggregate the trace data into metrics.
 
-For the purposes of this example, the Opentelemetry Collector of the [docker-compose.yml](./docker-compose.yml) file
-has been configured to listen on port `14278` for Thrift formatted traces sent directly from applications to the
-collector over HTTP.
-
-An example Python script has been provided to demonstrate sending individual traces to the Opentelemetry Collector running in
-this SPM Development Environment.
-
-### Setup
-
-Run the following commands to setup the Python virtual environment and install the Opentelemetry SDK:
+Start the local stack needed for SPM, if not already done:
 ```shell
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up
 ```
 
-Then run this example a number of times to generate some traces: 
-
+Generate a specific number of traces with:
 ```shell
-./otlp_exporter_example.py
+docker run --env OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://otel_collector:4317" \
+  --network monitor_backend \
+  --rm \
+  jaegertracing/jaeger-tracegen:1.49 \
+    -trace-exporter otlp-grpc \
+    -traces 1
+```
+
+Or, emit traces over a period of time with:
+```shell
+docker run --env OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://otel_collector:4317" \
+  --network monitor_backend \
+  --rm \
+  jaegertracing/jaeger-tracegen:1.49 \
+    -trace-exporter otlp-grpc \
+    -duration 5s
 ```
 
 Navigate to Jaeger UI at http://localhost:16686/ and you should be able to see traces from this demo application
-under the `my_service` service:
+under the `tracegen` service:
 
-![My Service Traces](images/my_service_traces.png)
+![TraceGen Traces](images/tracegen_traces.png)
 
 Then navigate to the Monitor tab at http://localhost:16686/monitor to view the RED metrics:
 
-![My Service RED Metrics](images/my_service_metrics.png)
+![TraceGen RED Metrics](images/tracegen_metrics.png)
 
 ## Querying the HTTP API
 
@@ -139,7 +199,7 @@ quantile = 'quantile=' floatValue
   - The quantile to compute the latency 'P' value. Valid range (0,1].
   - Mandatory for 'latencies' type.
 
-groupByOperation = 'groupByOperation=' boolValue 
+groupByOperation = 'groupByOperation=' boolValue
 boolValue = '1' | 't' | 'T' | 'true' | 'TRUE' | 'True' | 0 | 'f' | 'F' | 'false' | 'FALSE' | 'False'
   - A boolean value which will determine if the metrics query will also group by operation.
   - Optional with default: false
@@ -208,7 +268,13 @@ For example:
           },
           "timestamp": "2021-06-03T09:12:11Z"
         },
+      ]
 ...
+    }
+...
+  ]
+...
+}
   ```
 
 If the `groupByOperation=true` parameter is set, the response will include the operation name in the labels like so:
@@ -247,3 +313,6 @@ $ curl http://localhost:16686/api/metrics/minstep | jq .
   ]
 }
 ```
+
+[spanmetricsconnector]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/connector/spanmetricsconnector
+[spanmetricsconnectorreadme]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/connector/spanmetricsconnector/README.md

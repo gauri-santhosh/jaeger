@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package client
 
@@ -140,7 +129,7 @@ func TestClientGetIndices(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			testServer := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+			testServer := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, _ *http.Request) {
 				res.WriteHeader(test.responseCode)
 
 				response := test.response
@@ -248,7 +237,7 @@ func TestClientDeleteIndices(t *testing.T) {
 				assert.Equal(t, http.MethodDelete, req.Method)
 				assert.Equal(t, "Basic foobar", req.Header.Get("Authorization"))
 				assert.Equal(t, fmt.Sprintf("%ds", masterTimeoutSeconds), req.URL.Query().Get("master_timeout"))
-				assert.True(t, len(req.URL.Path) <= maxURLPathLength)
+				assert.LessOrEqual(t, len(req.URL.Path), maxURLPathLength)
 
 				// removes leading '/' and trailing ','
 				// example: /jaeger-span-000001,  =>  jaeger-span-000001
@@ -283,7 +272,7 @@ func TestClientDeleteIndices(t *testing.T) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), test.errContains)
 			} else {
-				assert.Equal(t, len(test.indices), deletedIndicesCount)
+				assert.Len(t, test.indices, deletedIndicesCount)
 			}
 		})
 	}
@@ -396,10 +385,11 @@ func TestClientCreateAliases(t *testing.T) {
 				assert.Equal(t, http.MethodPost, req.Method)
 				assert.Equal(t, "Basic foobar", req.Header.Get("Authorization"))
 				body, err := io.ReadAll(req.Body)
-				require.NoError(t, err)
-				assert.Equal(t, expectedRequestBody, string(body))
-				res.WriteHeader(test.responseCode)
-				res.Write([]byte(test.response))
+				if assert.NoError(t, err) {
+					assert.Equal(t, expectedRequestBody, string(body))
+					res.WriteHeader(test.responseCode)
+					res.Write([]byte(test.response))
+				}
 			}))
 			defer testServer.Close()
 
@@ -456,7 +446,7 @@ func TestClientDeleteAliases(t *testing.T) {
 				assert.Equal(t, http.MethodPost, req.Method)
 				assert.Equal(t, "Basic foobar", req.Header.Get("Authorization"))
 				body, err := io.ReadAll(req.Body)
-				require.NoError(t, err)
+				assert.NoError(t, err)
 				assert.Equal(t, expectedRequestBody, string(body))
 				res.WriteHeader(test.responseCode)
 				res.Write([]byte(test.response))
@@ -484,16 +474,24 @@ func TestClientCreateTemplate(t *testing.T) {
 	templateContent := "template content"
 	tests := []struct {
 		name         string
+		versionResp  string
 		responseCode int
 		response     string
 		errContains  string
 	}{
 		{
-			name:         "success",
+			name:         "success/v7",
+			versionResp:  elasticsearch7,
+			responseCode: http.StatusOK,
+		},
+		{
+			name:         "success/v8",
+			versionResp:  elasticsearch8,
 			responseCode: http.StatusOK,
 		},
 		{
 			name:         "client error",
+			versionResp:  elasticsearch7,
 			responseCode: http.StatusBadRequest,
 			response:     esErrResponse,
 			errContains:  "failed to create template: jaeger-template",
@@ -502,11 +500,16 @@ func TestClientCreateTemplate(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			testServer := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+				if req.URL.String() == "/" { // ES version check
+					res.WriteHeader(http.StatusOK)
+					res.Write([]byte(test.versionResp))
+					return
+				}
 				assert.True(t, strings.HasSuffix(req.URL.String(), "_template/jaeger-template"))
 				assert.Equal(t, http.MethodPut, req.Method)
 				assert.Equal(t, "Basic foobar", req.Header.Get("Authorization"))
 				body, err := io.ReadAll(req.Body)
-				require.NoError(t, err)
+				assert.NoError(t, err)
 				assert.Equal(t, templateContent, string(body))
 
 				res.WriteHeader(test.responseCode)
@@ -532,7 +535,7 @@ func TestClientCreateTemplate(t *testing.T) {
 
 func TestRollover(t *testing.T) {
 	expectedRequestBody := "{\"conditions\":{\"max_age\":\"2d\"}}"
-	mapConditions := map[string]interface{}{
+	mapConditions := map[string]any{
 		"max_age": "2d",
 	}
 
@@ -560,7 +563,7 @@ func TestRollover(t *testing.T) {
 				assert.Equal(t, http.MethodPost, req.Method)
 				assert.Equal(t, "Basic foobar", req.Header.Get("Authorization"))
 				body, err := io.ReadAll(req.Body)
-				require.NoError(t, err)
+				assert.NoError(t, err)
 				assert.Equal(t, expectedRequestBody, string(body))
 
 				res.WriteHeader(test.responseCode)

@@ -7,42 +7,44 @@ on:
   pull_request:
     branches: [main]
 
-# See https://github.com/ossf/scorecard/blob/main/docs/checks.md#token-permissions
-permissions:  # added using https://github.com/step-security/secure-workflows
-  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ (github.event.pull_request && github.event.pull_request.number) || github.ref || github.run_id }}
+  cancel-in-progress: true
 
-env:
-  # Using upload token helps against rate limiting errors.
-  # Cannot define it as secret as we need it accessible from forks.
-  # See https://github.com/codecov/codecov-action/issues/837
-  CODECOV_TOKEN: f457b710-93af-4191-8678-bcf51281f98c
+permissions:
+  contents: read
 
 jobs:
   unit-tests:
+    permissions:
+      checks: write
     runs-on: ubuntu-latest
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@18bf8ad2ca49c14cbb28b91346d626ccfb00c518
+      uses: step-security/harden-runner@0d381219ddf674d61a7572ddd19d7941e271515c # v2.9.0
       with:
         egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
 
-    - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
-    - uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+    - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
       with:
-        go-version: 1.19.x
+        go-version: 1.23.x
+        cache-dependency-path: ./go.sum
 
-    - name: Install tools
-      run: make install-ci
+    # download dependencies separately to keep unit test step's output cleaner
+    - name: go mod download
+      run: go mod download
+
+    - name: Install test deps
+      # even though the same target runs from test-ci, running it separately makes for cleaner log in GH workflow
+      run: make install-test-tools
 
     - name: Run unit tests
       run: make test-ci
 
     - name: Upload coverage to codecov
-      uses: codecov/codecov-action@d9f34f8cd5cb3b3eb79b3e4b5dae3a16df499a70
+      uses: ./.github/actions/upload-codecov
       with:
-        file: cover.out
-        verbose: true
+        files: cover.out
         flags: unittests
-        fail_ci_if_error: true
-        token: ${{ env.CODECOV_TOKEN }}

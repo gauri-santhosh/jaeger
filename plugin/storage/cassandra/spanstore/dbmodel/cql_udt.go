@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dbmodel
 
@@ -26,12 +15,12 @@ import (
 var ErrTraceIDWrongLength = errors.New("TraceID is not a 128bit integer")
 
 // MarshalCQL handles marshaling DBTraceID (e.g. in SpanRef)
-func (t TraceID) MarshalCQL(info gocql.TypeInfo) ([]byte, error) {
+func (t TraceID) MarshalCQL(gocql.TypeInfo) ([]byte, error) {
 	return t[:], nil
 }
 
 // UnmarshalCQL handles unmarshaling DBTraceID (e.g. in SpanRef)
-func (t *TraceID) UnmarshalCQL(info gocql.TypeInfo, data []byte) error {
+func (t *TraceID) UnmarshalCQL(_ gocql.TypeInfo, data []byte) error {
 	if len(data) != 16 {
 		return ErrTraceIDWrongLength
 	}

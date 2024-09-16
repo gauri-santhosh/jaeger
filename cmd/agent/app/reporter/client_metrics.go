@@ -1,25 +1,14 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package reporter
 
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/pkg/metrics"
@@ -75,7 +64,7 @@ type ClientMetricsReporter struct {
 	params        ClientMetricsReporterParams
 	clientMetrics *clientMetrics
 	shutdown      chan struct{}
-	closed        *atomic.Bool
+	closed        atomic.Bool
 
 	// map from client-uuid to *lastReceivedClientStats
 	lastReceivedClientStats sync.Map
@@ -104,7 +93,6 @@ func WrapWithClientMetrics(params ClientMetricsReporterParams) *ClientMetricsRep
 		params:        params,
 		clientMetrics: cm,
 		shutdown:      make(chan struct{}),
-		closed:        atomic.NewBool(false),
 	}
 	go r.expireClientMetricsLoop()
 	return r
@@ -144,7 +132,7 @@ func (r *ClientMetricsReporter) expireClientMetricsLoop() {
 
 func (r *ClientMetricsReporter) expireClientMetrics(t time.Time) {
 	var size int64
-	r.lastReceivedClientStats.Range(func(k, v interface{}) bool {
+	r.lastReceivedClientStats.Range(func(k, v any) bool {
 		stats := v.(*lastReceivedClientStats)
 		stats.lock.Lock()
 		defer stats.lock.Unlock()

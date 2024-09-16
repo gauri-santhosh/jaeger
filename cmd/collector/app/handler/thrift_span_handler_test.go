@@ -1,21 +1,11 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -26,7 +16,6 @@ import (
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/processor"
 	zipkinsanitizer "github.com/jaegertracing/jaeger/cmd/collector/app/sanitizer/zipkin"
-	"github.com/jaegertracing/jaeger/cmd/collector/app/zipkin/zipkindeser"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/thrift-gen/jaeger"
 	"github.com/jaegertracing/jaeger/thrift-gen/zipkincore"
@@ -57,7 +46,7 @@ func TestJaegerSpanHandler(t *testing.T) {
 			assert.Equal(t, tc.expectedErr, err)
 		} else {
 			assert.Len(t, res, 1)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.True(t, res[0].Ok)
 		}
 	}
@@ -80,7 +69,7 @@ func (s *shouldIErrorProcessor) ProcessSpans(mSpans []*model.Span, _ processor.S
 	return retMe, nil
 }
 
-func (s *shouldIErrorProcessor) Close() error {
+func (*shouldIErrorProcessor) Close() error {
 	return nil
 }
 
@@ -101,7 +90,7 @@ func TestZipkinSpanHandler(t *testing.T) {
 		{
 			name:        "dual client-server span",
 			expectedErr: nil,
-			filename:    "testdata/zipkin_v1_merged_spans.json",
+			filename:    "testdata/zipkin_thrift_v1_merged_spans.json",
 		},
 	}
 	for _, tc := range tests {
@@ -116,8 +105,7 @@ func TestZipkinSpanHandler(t *testing.T) {
 			if tc.filename != "" {
 				data, err := os.ReadFile(tc.filename)
 				require.NoError(t, err)
-				spans, err = zipkindeser.DeserializeJSON(data)
-				require.NoError(t, err)
+				require.NoError(t, json.Unmarshal(data, &spans))
 			} else {
 				spans = []*zipkincore.Span{
 					{
@@ -131,7 +119,7 @@ func TestZipkinSpanHandler(t *testing.T) {
 				assert.Equal(t, tc.expectedErr, err)
 			} else {
 				assert.Len(t, res, len(spans))
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				for i := range res {
 					assert.True(t, res[i].Ok)
 				}

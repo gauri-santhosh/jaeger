@@ -1,22 +1,10 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
 import (
-	"fmt"
 	"net/http"
 	"regexp"
 	"testing"
@@ -157,7 +145,7 @@ func TestParseTraceQuery(t *testing.T) {
 		test := tc // capture loop var
 		t.Run(test.urlStr, func(t *testing.T) {
 			request, err := http.NewRequest(http.MethodGet, test.urlStr, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			parser := &queryParser{
 				timeNow: func() time.Time {
 					return timeNow
@@ -165,7 +153,7 @@ func TestParseTraceQuery(t *testing.T) {
 			}
 			actualQuery, err := parser.parseTraceQueryParams(request)
 			if test.errMsg == "" {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				if !assert.Equal(t, test.expectedQuery, actualQuery) {
 					for _, s := range pretty.Diff(test.expectedQuery, actualQuery) {
 						t.Log(s)
@@ -174,7 +162,7 @@ func TestParseTraceQuery(t *testing.T) {
 			} else {
 				matched, matcherr := regexp.MatchString(test.errMsg, err.Error())
 				require.NoError(t, matcherr)
-				assert.True(t, matched, fmt.Sprintf("Error \"%s\" should match \"%s\"", err.Error(), test.errMsg))
+				assert.True(t, matched, "Error \"%s\" should match \"%s\"", err.Error(), test.errMsg)
 			}
 		})
 	}
@@ -218,9 +206,7 @@ func TestParseDuration(t *testing.T) {
 	request, err := http.NewRequest(http.MethodGet, "x?service=foo&step=1000", nil)
 	require.NoError(t, err)
 	parser := &queryParser{
-		timeNow: func() time.Time {
-			return time.Now()
-		},
+		timeNow: time.Now,
 	}
 	mqp, err := parser.parseMetricsQueryParams(request)
 	require.NoError(t, err)
@@ -231,9 +217,7 @@ func TestParseRepeatedServices(t *testing.T) {
 	request, err := http.NewRequest(http.MethodGet, "x?service=foo&service=bar", nil)
 	require.NoError(t, err)
 	parser := &queryParser{
-		timeNow: func() time.Time {
-			return time.Now()
-		},
+		timeNow: time.Now,
 	}
 	mqp, err := parser.parseMetricsQueryParams(request)
 	require.NoError(t, err)
@@ -260,8 +244,7 @@ func TestParseRepeatedSpanKinds(t *testing.T) {
 }
 
 func TestParameterErrors(t *testing.T) {
-	ts := initializeTestServer()
-	defer ts.server.Close()
+	ts := initializeTestServer(t)
 
 	for _, tc := range []struct {
 		name                       string

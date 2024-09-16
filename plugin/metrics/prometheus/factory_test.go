@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package prometheus
 
@@ -24,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/pkg/config"
+	promCfg "github.com/jaegertracing/jaeger/pkg/prometheus/config"
 	"github.com/jaegertracing/jaeger/pkg/testutils"
 	"github.com/jaegertracing/jaeger/storage"
 )
@@ -32,40 +22,85 @@ var _ storage.MetricsFactory = new(Factory)
 
 func TestPrometheusFactory(t *testing.T) {
 	f := NewFactory()
-	assert.NoError(t, f.Initialize(zap.NewNop()))
+	require.NoError(t, f.Initialize(zap.NewNop()))
 	assert.NotNil(t, f.logger)
-	assert.Equal(t, "prometheus", f.options.Primary.namespace)
 
 	listener, err := net.Listen("tcp", "localhost:")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, listener)
 	defer listener.Close()
 
-	f.options.Primary.ServerURL = "http://" + listener.Addr().String()
+	f.options.ServerURL = "http://" + listener.Addr().String()
 	reader, err := f.CreateMetricsReader()
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, reader)
 }
 
 func TestWithDefaultConfiguration(t *testing.T) {
 	f := NewFactory()
-	assert.Equal(t, f.options.Primary.ServerURL, "http://localhost:9090")
-	assert.Equal(t, f.options.Primary.ConnectTimeout, 30*time.Second)
+	assert.Equal(t, "http://localhost:9090", f.options.ServerURL)
+	assert.Equal(t, 30*time.Second, f.options.ConnectTimeout)
+
+	assert.Empty(t, f.options.MetricNamespace)
+	assert.Equal(t, "ms", f.options.LatencyUnit)
 }
 
 func TestWithConfiguration(t *testing.T) {
-	f := NewFactory()
-	v, command := config.Viperize(f.AddFlags)
-	err := command.ParseFlags([]string{
-		"--prometheus.server-url=http://localhost:1234",
-		"--prometheus.connect-timeout=5s",
+	t.Run("with custom configuration and no space in token file path", func(t *testing.T) {
+		f := NewFactory()
+		v, command := config.Viperize(f.AddFlags)
+		err := command.ParseFlags([]string{
+			"--prometheus.server-url=http://localhost:1234",
+			"--prometheus.connect-timeout=5s",
+			"--prometheus.token-file=test/test_file.txt",
+			"--prometheus.token-override-from-context=false",
+		})
+		require.NoError(t, err)
+		f.InitFromViper(v, zap.NewNop())
+		assert.Equal(t, "http://localhost:1234", f.options.ServerURL)
+		assert.Equal(t, 5*time.Second, f.options.ConnectTimeout)
+		assert.Equal(t, "test/test_file.txt", f.options.TokenFilePath)
+		assert.False(t, f.options.TokenOverrideFromContext)
 	})
-	require.NoError(t, err)
+	t.Run("with space in token file path", func(t *testing.T) {
+		f := NewFactory()
+		v, command := config.Viperize(f.AddFlags)
+		err := command.ParseFlags([]string{
+			"--prometheus.token-file=test/ test file.txt",
+		})
+		require.NoError(t, err)
+		f.InitFromViper(v, zap.NewNop())
+		assert.Equal(t, "test/ test file.txt", f.options.TokenFilePath)
+	})
+	t.Run("with custom configuration of prometheus.query", func(t *testing.T) {
+		f := NewFactory()
+		v, command := config.Viperize(f.AddFlags)
+		err := command.ParseFlags([]string{
+			"--prometheus.query.namespace=mynamespace",
+			"--prometheus.query.duration-unit=ms",
+		})
+		require.NoError(t, err)
+		f.InitFromViper(v, zap.NewNop())
+		assert.Equal(t, "mynamespace", f.options.MetricNamespace)
+		assert.Equal(t, "ms", f.options.LatencyUnit)
+	})
+	t.Run("with invalid prometheus.query.duration-unit", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Expected a panic due to invalid duration-unit")
+			}
+		}()
 
-	f.InitFromViper(v, zap.NewNop())
-	assert.Equal(t, f.options.Primary.ServerURL, "http://localhost:1234")
-	assert.Equal(t, f.options.Primary.ConnectTimeout, 5*time.Second)
+		f := NewFactory()
+		v, command := config.Viperize(f.AddFlags)
+		err := command.ParseFlags([]string{
+			"--prometheus.query.duration-unit=milliseconds",
+		})
+		require.NoError(t, err)
+		f.InitFromViper(v, zap.NewNop())
+		require.Empty(t, f.options.LatencyUnit)
+	})
 }
 
 func TestFailedTLSOptions(t *testing.T) {
@@ -87,4 +122,22 @@ func TestFailedTLSOptions(t *testing.T) {
 
 	f.InitFromViper(v, logger)
 	t.Errorf("f.InitFromViper did not panic")
+}
+
+func TestEmptyFactoryConfig(t *testing.T) {
+	cfg := promCfg.Configuration{}
+	_, err := NewFactoryWithConfig(cfg, zap.NewNop())
+	require.Error(t, err)
+}
+
+func TestFactoryConfig(t *testing.T) {
+	cfg := promCfg.Configuration{
+		ServerURL: "localhost:1234",
+	}
+	_, err := NewFactoryWithConfig(cfg, zap.NewNop())
+	require.NoError(t, err)
+}
+
+func TestMain(m *testing.M) {
+	testutils.VerifyGoLeaks(m)
 }

@@ -1,21 +1,11 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -75,8 +65,8 @@ func (i *IndicesClient) GetJaegerIndices(prefix string) ([]Index, error) {
 	}
 
 	type indexInfo struct {
-		Aliases  map[string]interface{} `json:"aliases"`
-		Settings map[string]string      `json:"settings"`
+		Aliases  map[string]any    `json:"aliases"`
+		Settings map[string]string `json:"settings"`
 	}
 	var indicesInfo map[string]indexInfo
 	if err = json.Unmarshal(body, &indicesInfo); err != nil {
@@ -108,7 +98,8 @@ func (i *IndicesClient) indexDeleteRequest(concatIndices string) error {
 		method:   http.MethodDelete,
 	})
 	if err != nil {
-		if responseError, isResponseError := err.(ResponseError); isResponseError {
+		var responseError ResponseError
+		if errors.As(err, &responseError) {
 			if responseError.StatusCode != http.StatusOK {
 				return responseError.prefixMessage(fmt.Sprintf("failed to delete indices: %s", concatIndices))
 			}
@@ -152,7 +143,8 @@ func (i *IndicesClient) CreateIndex(index string) error {
 		method:   http.MethodPut,
 	})
 	if err != nil {
-		if responseError, isResponseError := err.(ResponseError); isResponseError {
+		var responseError ResponseError
+		if errors.As(err, &responseError) {
 			if responseError.StatusCode != http.StatusOK {
 				return responseError.prefixMessage(fmt.Sprintf("failed to create index: %s", index))
 			}
@@ -166,7 +158,8 @@ func (i *IndicesClient) CreateIndex(index string) error {
 func (i *IndicesClient) CreateAlias(aliases []Alias) error {
 	err := i.aliasAction("add", aliases)
 	if err != nil {
-		if responseError, isResponseError := err.(ResponseError); isResponseError {
+		var responseError ResponseError
+		if errors.As(err, &responseError) {
 			if responseError.StatusCode != http.StatusOK {
 				return responseError.prefixMessage(fmt.Sprintf("failed to create aliases: %s", i.aliasesString(aliases)))
 			}
@@ -180,7 +173,8 @@ func (i *IndicesClient) CreateAlias(aliases []Alias) error {
 func (i *IndicesClient) DeleteAlias(aliases []Alias) error {
 	err := i.aliasAction("remove", aliases)
 	if err != nil {
-		if responseError, isResponseError := err.(ResponseError); isResponseError {
+		var responseError ResponseError
+		if errors.As(err, &responseError) {
 			if responseError.StatusCode != http.StatusOK {
 				return responseError.prefixMessage(fmt.Sprintf("failed to delete aliases: %s", i.aliasesString(aliases)))
 			}
@@ -190,7 +184,7 @@ func (i *IndicesClient) DeleteAlias(aliases []Alias) error {
 	return nil
 }
 
-func (i *IndicesClient) aliasesString(aliases []Alias) string {
+func (*IndicesClient) aliasesString(aliases []Alias) string {
 	concatAliases := ""
 	for _, alias := range aliases {
 		concatAliases += fmt.Sprintf("[index: %s, alias: %s],", alias.Index, alias.Name)
@@ -199,22 +193,22 @@ func (i *IndicesClient) aliasesString(aliases []Alias) string {
 }
 
 func (i *IndicesClient) aliasAction(action string, aliases []Alias) error {
-	actions := []map[string]interface{}{}
+	actions := []map[string]any{}
 
 	for _, alias := range aliases {
-		options := map[string]interface{}{
+		options := map[string]any{
 			"index": alias.Index,
 			"alias": alias.Name,
 		}
 		if alias.IsWriteIndex {
 			options["is_write_index"] = true
 		}
-		actions = append(actions, map[string]interface{}{
+		actions = append(actions, map[string]any{
 			action: options,
 		})
 	}
 
-	body := map[string]interface{}{
+	body := map[string]any{
 		"actions": actions,
 	}
 
@@ -231,15 +225,27 @@ func (i *IndicesClient) aliasAction(action string, aliases []Alias) error {
 	return err
 }
 
+func (i IndicesClient) version() (uint, error) {
+	cl := ClusterClient{Client: i.Client}
+	return cl.Version()
+}
+
 // CreateTemplate an ES index template
 func (i IndicesClient) CreateTemplate(template, name string) error {
+	endpointFmt := "_template/%s"
+	if v, err := i.version(); err != nil {
+		return err
+	} else if v >= 8 {
+		endpointFmt = "_index_template/%s"
+	}
 	_, err := i.request(elasticRequest{
-		endpoint: fmt.Sprintf("_template/%s", name),
+		endpoint: fmt.Sprintf(endpointFmt, name),
 		method:   http.MethodPut,
 		body:     []byte(template),
 	})
 	if err != nil {
-		if responseError, isResponseError := err.(ResponseError); isResponseError {
+		var responseError ResponseError
+		if errors.As(err, &responseError) {
 			if responseError.StatusCode != http.StatusOK {
 				return responseError.prefixMessage(fmt.Sprintf("failed to create template: %s", name))
 			}
@@ -250,13 +256,13 @@ func (i IndicesClient) CreateTemplate(template, name string) error {
 }
 
 // Rollover create a rollover for certain index/alias
-func (i IndicesClient) Rollover(rolloverTarget string, conditions map[string]interface{}) error {
+func (i IndicesClient) Rollover(rolloverTarget string, conditions map[string]any) error {
 	esReq := elasticRequest{
 		endpoint: fmt.Sprintf("%s/_rollover/", rolloverTarget),
 		method:   http.MethodPost,
 	}
 	if len(conditions) > 0 {
-		body := map[string]interface{}{
+		body := map[string]any{
 			"conditions": conditions,
 		}
 		bodyBytes, err := json.Marshal(body)
@@ -267,7 +273,8 @@ func (i IndicesClient) Rollover(rolloverTarget string, conditions map[string]int
 	}
 	_, err := i.request(esReq)
 	if err != nil {
-		if responseError, isResponseError := err.(ResponseError); isResponseError {
+		var responseError ResponseError
+		if errors.As(err, &responseError) {
 			if responseError.StatusCode != http.StatusOK {
 				return responseError.prefixMessage(fmt.Sprintf("failed to create rollover target: %s", rolloverTarget))
 			}

@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -23,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/internal/metricstest"
@@ -64,19 +54,19 @@ func TestServiceNamesStorageWrite(t *testing.T) {
 				query := &mocks.Query{}
 				query1 := &mocks.Query{}
 				query2 := &mocks.Query{}
-				query.On("Bind", []interface{}{"service-a"}).Return(query1)
-				query.On("Bind", []interface{}{"service-b"}).Return(query2)
+				query.On("Bind", []any{"service-a"}).Return(query1)
+				query.On("Bind", []any{"service-b"}).Return(query2)
 				query1.On("Exec").Return(nil)
 				query2.On("Exec").Return(execError)
 				query2.On("String").Return("select from service_names")
 
-				var emptyArgs []interface{}
+				var emptyArgs []any
 				s.session.On("Query", mock.AnythingOfType("string"), emptyArgs).Return(query)
 
 				err := s.storage.Write("service-a")
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				err = s.storage.Write("service-b")
-				assert.EqualError(t, err, "failed to Exec query 'select from service_names': exec error")
+				require.EqualError(t, err, "failed to Exec query 'select from service_names': exec error")
 				assert.Equal(t, map[string]string{
 					"level": "error",
 					"msg":   "Failed to exec query",
@@ -91,7 +81,7 @@ func TestServiceNamesStorageWrite(t *testing.T) {
 
 				// write again
 				err = s.storage.Write("service-a")
-				assert.NoError(t, err)
+				require.NoError(t, err)
 
 				counts2, _ := s.metricsFactory.Snapshot()
 				expCounts := counts
@@ -110,14 +100,14 @@ func TestServiceNamesStorageGetServices(t *testing.T) {
 	scanError := errors.New("scan error")
 	var writeCacheTTL time.Duration
 	var matched bool
-	matchOnce := mock.MatchedBy(func(v []interface{}) bool {
+	matchOnce := mock.MatchedBy(func(_ []any) bool {
 		if matched {
 			return false
 		}
 		matched = true
 		return true
 	})
-	matchEverything := mock.MatchedBy(func(v []interface{}) bool { return true })
+	matchEverything := mock.MatchedBy(func(_ []any) bool { return true })
 	for _, expErr := range []error{nil, scanError} {
 		withServiceNamesStorage(writeCacheTTL, func(s *serviceNameStorageTest) {
 			iter := &mocks.Iterator{}
@@ -128,16 +118,16 @@ func TestServiceNamesStorageGetServices(t *testing.T) {
 			query := &mocks.Query{}
 			query.On("Iter").Return(iter)
 
-			var emptyArgs []interface{}
+			var emptyArgs []any
 			s.session.On("Query", mock.AnythingOfType("string"), emptyArgs).Return(query)
 
 			services, err := s.storage.GetServices()
 			if expErr == nil {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				// expect empty string because mock iter.Scan(&placeholder) does not write to `placeholder`
 				assert.Equal(t, []string{""}, services)
 			} else {
-				assert.EqualError(t, err, "error reading service_names from storage: "+expErr.Error())
+				require.EqualError(t, err, "error reading service_names from storage: "+expErr.Error())
 			}
 		})
 	}

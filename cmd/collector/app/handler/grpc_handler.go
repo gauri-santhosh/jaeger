@@ -1,21 +1,11 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package handler
 
 import (
 	"context"
+	"errors"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -86,13 +76,13 @@ func (c *batchConsumer) consume(ctx context.Context, batch *model.Batch) error {
 		}
 	}
 	_, err = c.spanProcessor.ProcessSpans(batch.Spans, processor.SpansOptions{
-		InboundTransport: processor.GRPCTransport,
-		SpanFormat:       processor.ProtoSpanFormat,
+		InboundTransport: c.spanOptions.InboundTransport,
+		SpanFormat:       c.spanOptions.SpanFormat,
 		Tenant:           tenant,
 	})
 	if err != nil {
-		if err == processor.ErrBusy {
-			return status.Errorf(codes.ResourceExhausted, err.Error())
+		if errors.Is(err, processor.ErrBusy) {
+			return status.Error(codes.ResourceExhausted, err.Error())
 		}
 		c.logger.Error("cannot process spans", zap.Error(err))
 		return err

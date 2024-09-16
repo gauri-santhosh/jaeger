@@ -1,16 +1,5 @@
 // Copyright (c) 2022 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package tenancy
 
@@ -60,7 +49,7 @@ func TestTenancyInterceptors(t *testing.T) {
 			name:       "missing tenant header",
 			tenancyMgr: NewManager(&Options{Enabled: true, Tenants: []string{"megacorp"}}),
 			ctx:        metadata.NewIncomingContext(context.Background(), map[string][]string{}),
-			errMsg:     "rpc error: code = PermissionDenied desc = missing tenant header",
+			errMsg:     "rpc error: code = Unauthenticated desc = missing tenant header",
 		},
 		{
 			name:       "valid tenant header",
@@ -83,13 +72,13 @@ func TestTenancyInterceptors(t *testing.T) {
 				context: test.ctx,
 			}
 			ssi := grpc.StreamServerInfo{}
-			handler := func(interface{}, grpc.ServerStream) error {
+			handler := func(any, grpc.ServerStream) error {
 				// do nothing
 				return nil
 			}
 			err := interceptor(0, &ss, &ssi, handler)
 			if test.errMsg == "" {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			} else {
 				require.Error(t, err)
 				assert.Equal(t, test.errMsg, err.Error())
@@ -98,13 +87,13 @@ func TestTenancyInterceptors(t *testing.T) {
 			uinterceptor := NewGuardingUnaryInterceptor(test.tenancyMgr)
 			usi := &grpc.UnaryServerInfo{}
 			iface := 0
-			uhandler := func(ctx context.Context, req interface{}) (interface{}, error) {
+			uhandler := func(_ context.Context, req any) (any, error) {
 				// do nothing
 				return req, nil
 			}
 			_, err = uinterceptor(test.ctx, iface, usi, uhandler)
 			if test.errMsg == "" {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			} else {
 				require.Error(t, err)
 				assert.Equal(t, test.errMsg, err.Error())
@@ -118,7 +107,7 @@ func TestClientUnaryInterceptor(t *testing.T) {
 	interceptor := NewClientUnaryInterceptor(tm)
 	var tenant string
 	fakeErr := errors.New("foo")
-	invoker := func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
+	invoker := func(ctx context.Context, _ /* method */ string, _ /* req */, _ /* reply */ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
 		md, ok := metadata.FromOutgoingContext(ctx)
 		assert.True(t, ok)
 		ten, err := tenantFromMetadata(md, tm.Header)
@@ -138,7 +127,7 @@ func TestClientStreamInterceptor(t *testing.T) {
 	var tenant string
 	fakeErr := errors.New("foo")
 	ctx := WithTenant(context.Background(), "acme")
-	streamer := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+	streamer := func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ /* method */ string, _ ...grpc.CallOption) (grpc.ClientStream, error) {
 		md, ok := metadata.FromOutgoingContext(ctx)
 		assert.True(t, ok)
 		ten, err := tenantFromMetadata(md, tm.Header)

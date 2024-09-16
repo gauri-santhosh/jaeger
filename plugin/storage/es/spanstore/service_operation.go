@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -39,14 +28,14 @@ const (
 
 // ServiceOperationStorage stores service to operation pairs.
 type ServiceOperationStorage struct {
-	client       es.Client
+	client       func() es.Client
 	logger       *zap.Logger
 	serviceCache cache.Cache
 }
 
 // NewServiceOperationStorage returns a new ServiceOperationStorage.
 func NewServiceOperationStorage(
-	client es.Client,
+	client func() es.Client,
 	logger *zap.Logger,
 	cacheTTL time.Duration,
 ) *ServiceOperationStorage {
@@ -72,7 +61,7 @@ func (s *ServiceOperationStorage) Write(indexName string, jsonSpan *dbmodel.Span
 
 	cacheKey := hashCode(service)
 	if !keyInCache(cacheKey, s.serviceCache) {
-		s.client.Index().Index(indexName).Type(serviceType).Id(cacheKey).BodyJson(service).Add()
+		s.client().Index().Index(indexName).Type(serviceType).Id(cacheKey).BodyJson(service).Add()
 		writeCache(cacheKey, s.serviceCache)
 	}
 }
@@ -80,14 +69,14 @@ func (s *ServiceOperationStorage) Write(indexName string, jsonSpan *dbmodel.Span
 func (s *ServiceOperationStorage) getServices(context context.Context, indices []string, maxDocCount int) ([]string, error) {
 	serviceAggregation := getServicesAggregation(maxDocCount)
 
-	searchService := s.client.Search(indices...).
+	searchService := s.client().Search(indices...).
 		Size(0). // set to 0 because we don't want actual documents.
 		IgnoreUnavailable(true).
 		Aggregation(servicesAggregation, serviceAggregation)
 
 	searchResult, err := searchService.Do(context)
 	if err != nil {
-		return nil, fmt.Errorf("search services failed: %w", err)
+		return nil, fmt.Errorf("search services failed: %w", es.DetailedError(err))
 	}
 	if searchResult.Aggregations == nil {
 		return []string{}, nil
@@ -110,7 +99,7 @@ func (s *ServiceOperationStorage) getOperations(context context.Context, indices
 	serviceQuery := elastic.NewTermQuery(serviceName, service)
 	serviceFilter := getOperationsAggregation(maxDocCount)
 
-	searchService := s.client.Search(indices...).
+	searchService := s.client().Search(indices...).
 		Size(0).
 		Query(serviceQuery).
 		IgnoreUnavailable(true).
@@ -118,7 +107,7 @@ func (s *ServiceOperationStorage) getOperations(context context.Context, indices
 
 	searchResult, err := searchService.Do(context)
 	if err != nil {
-		return nil, fmt.Errorf("search operations failed: %w", err)
+		return nil, fmt.Errorf("search operations failed: %w", es.DetailedError(err))
 	}
 	if searchResult.Aggregations == nil {
 		return []string{}, nil

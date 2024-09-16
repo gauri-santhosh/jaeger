@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dbmodel
 
@@ -23,8 +12,21 @@ import (
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2/metrics"
 )
 
+// Translator translates Prometheus's metrics model to Jaeger's.
+type Translator struct {
+	labelMap map[string]string
+}
+
+// New returns a new Translator.
+func New(spanNameLabel string) Translator {
+	return Translator{
+		// "operation" is the label name that Jaeger UI expects.
+		labelMap: map[string]string{spanNameLabel: "operation"},
+	}
+}
+
 // ToDomainMetricsFamily converts Prometheus' representation of metrics query results to Jaeger's.
-func ToDomainMetricsFamily(name, description string, mv model.Value) (*metrics.MetricFamily, error) {
+func (d Translator) ToDomainMetricsFamily(name, description string, mv model.Value) (*metrics.MetricFamily, error) {
 	if mv.Type() != model.ValMatrix {
 		return &metrics.MetricFamily{}, fmt.Errorf("unexpected metrics ValueType: %s", mv.Type())
 	}
@@ -32,16 +34,16 @@ func ToDomainMetricsFamily(name, description string, mv model.Value) (*metrics.M
 		Name:    name,
 		Type:    metrics.MetricType_GAUGE,
 		Help:    description,
-		Metrics: toDomainMetrics(mv.(model.Matrix)),
+		Metrics: d.toDomainMetrics(mv.(model.Matrix)),
 	}, nil
 }
 
 // toDomainMetrics converts Prometheus' representation of metrics to Jaeger's.
-func toDomainMetrics(matrix model.Matrix) []*metrics.Metric {
+func (d Translator) toDomainMetrics(matrix model.Matrix) []*metrics.Metric {
 	ms := make([]*metrics.Metric, matrix.Len())
 	for i, ss := range matrix {
 		ms[i] = &metrics.Metric{
-			Labels:       toDomainLabels(ss.Metric),
+			Labels:       d.toDomainLabels(ss.Metric),
 			MetricPoints: toDomainMetricPoints(ss.Values),
 		}
 	}
@@ -49,11 +51,15 @@ func toDomainMetrics(matrix model.Matrix) []*metrics.Metric {
 }
 
 // toDomainLabels converts Prometheus' representation of metric labels to Jaeger's.
-func toDomainLabels(promLabels model.Metric) []*metrics.Label {
+func (d Translator) toDomainLabels(promLabels model.Metric) []*metrics.Label {
 	labels := make([]*metrics.Label, len(promLabels))
 	j := 0
 	for k, v := range promLabels {
-		labels[j] = &metrics.Label{Name: string(k), Value: string(v)}
+		labelName := string(k)
+		if newLabel, ok := d.labelMap[labelName]; ok {
+			labelName = newLabel
+		}
+		labels[j] = &metrics.Label{Name: labelName, Value: string(v)}
 		j++
 	}
 	return labels
@@ -76,7 +82,8 @@ func toDomainMetricPoints(promDps []model.SamplePair) []*metrics.MetricPoint {
 func toDomainTimestamp(timeMs model.Time) *types.Timestamp {
 	return &types.Timestamp{
 		Seconds: int64(timeMs / 1000),
-		Nanos:   int32((timeMs % 1000) * 1_000_000),
+		//nolint: gosec // G115
+		Nanos: int32((timeMs % 1000) * 1_000_000),
 	}
 }
 

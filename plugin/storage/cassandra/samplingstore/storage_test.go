@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package samplingstore
 
@@ -23,6 +12,7 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/sampling/model"
@@ -61,8 +51,8 @@ func TestInsertThroughput(t *testing.T) {
 		query := &mocks.Query{}
 		query.On("Exec").Return(nil)
 
-		var args []interface{}
-		captureArgs := mock.MatchedBy(func(v []interface{}) bool {
+		var args []any
+		captureArgs := mock.MatchedBy(func(v []any) bool {
 			args = v
 			return true
 		})
@@ -77,7 +67,7 @@ func TestInsertThroughput(t *testing.T) {
 			},
 		}
 		err := s.store.InsertThroughput(throughput)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Len(t, args, 3)
 		if _, ok := args[0].(int64); !ok {
@@ -99,8 +89,8 @@ func TestInsertProbabilitiesAndQPS(t *testing.T) {
 		query := &mocks.Query{}
 		query.On("Exec").Return(nil)
 
-		var args []interface{}
-		captureArgs := mock.MatchedBy(func(v []interface{}) bool {
+		var args []any
+		captureArgs := mock.MatchedBy(func(v []any) bool {
 			args = v
 			return true
 		})
@@ -120,7 +110,7 @@ func TestInsertProbabilitiesAndQPS(t *testing.T) {
 		}
 
 		err := s.store.InsertProbabilitiesAndQPS(hostname, probabilities, qps)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Len(t, args, 4)
 		if d, ok := args[0].(int); ok {
@@ -163,12 +153,12 @@ func TestGetThroughput(t *testing.T) {
 		testCase := tc // capture loop var
 		t.Run(testCase.caption, func(t *testing.T) {
 			withSamplingStore(func(s *samplingStoreTest) {
-				scanMatcher := func() interface{} {
+				scanMatcher := func() any {
 					throughputStr := []string{
 						"\"svc,withcomma\",\"op,withcomma\",40,\"0.1,\"\n",
 						"svc,op,50,\n",
 					}
-					scanFunc := func(args []interface{}) bool {
+					scanFunc := func(args []any) bool {
 						if len(throughputStr) == 0 {
 							return false
 						}
@@ -197,7 +187,7 @@ func TestGetThroughput(t *testing.T) {
 				throughput, err := s.store.GetThroughput(testTime, testTime)
 
 				if testCase.expectedError == "" {
-					assert.NoError(t, err)
+					require.NoError(t, err)
 					assert.Len(t, throughput, 2)
 					assert.Equal(t,
 						model.Throughput{
@@ -218,7 +208,7 @@ func TestGetThroughput(t *testing.T) {
 						*throughput[1],
 					)
 				} else {
-					assert.EqualError(t, err, testCase.expectedError)
+					require.EqualError(t, err, testCase.expectedError)
 				}
 			})
 		})
@@ -244,11 +234,11 @@ func TestGetLatestProbabilities(t *testing.T) {
 		testCase := tc // capture loop var
 		t.Run(testCase.caption, func(t *testing.T) {
 			withSamplingStore(func(s *samplingStoreTest) {
-				scanMatcher := func() interface{} {
+				scanMatcher := func() any {
 					probabilitiesStr := []string{
 						"svc,op,0.84,40\n",
 					}
-					scanFunc := func(args []interface{}) bool {
+					scanFunc := func(args []any) bool {
 						if len(probabilitiesStr) == 0 {
 							return false
 						}
@@ -277,18 +267,18 @@ func TestGetLatestProbabilities(t *testing.T) {
 				probabilities, err := s.store.GetLatestProbabilities()
 
 				if testCase.expectedError == "" {
-					assert.NoError(t, err)
-					assert.Equal(t, 0.84, probabilities["svc"]["op"])
+					require.NoError(t, err)
+					assert.InDelta(t, 0.84, probabilities["svc"]["op"], 0.01)
 				} else {
-					assert.EqualError(t, err, testCase.expectedError)
+					require.EqualError(t, err, testCase.expectedError)
 				}
 			})
 		})
 	}
 }
 
-func matchEverything() interface{} {
-	return mock.MatchedBy(func(v []interface{}) bool { return true })
+func matchEverything() any {
+	return mock.MatchedBy(func(_ []any) bool { return true })
 }
 
 func TestGenerateRandomBucket(t *testing.T) {
@@ -389,4 +379,8 @@ func TestProbabilitiesSetToString(t *testing.T) {
 	s := probabilitiesSetToString(map[string]struct{}{"0.000001": {}, "0.000002": {}})
 	assert.True(t, s == "0.000001,0.000002" || s == "0.000002,0.000001")
 	assert.Equal(t, "", probabilitiesSetToString(nil))
+}
+
+func TestMain(m *testing.M) {
+	testutils.VerifyGoLeaks(m)
 }

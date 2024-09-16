@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package integration
 
@@ -21,7 +10,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -31,36 +22,50 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	samplemodel "github.com/jaegertracing/jaeger/cmd/collector/app/sampling/model"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
+	"github.com/jaegertracing/jaeger/storage/samplingstore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-)
-
-const (
-	iterations = 100
 )
 
 //go:embed fixtures
 var fixtures embed.FS
 
-// StorageIntegration holds components for storage integration test
+// StorageIntegration holds components for storage integration test.
+// The intended usage is as follows:
+// - a specific storage implementation declares its own test functions
+// - in those functions it instantiates and populates this struct
+// - it then calls RunAll.
+//
+// Some implementations may declare multiple tests, with different settings,
+// and RunAll() under different conditions.
 type StorageIntegration struct {
-	SpanWriter       spanstore.Writer
-	SpanReader       spanstore.Reader
-	DependencyWriter dependencystore.Writer
-	DependencyReader dependencystore.Reader
-	Fixtures         []*QueryFixtures
-	// TODO: remove this flag after all storage plugins returns spanKind with operationNames
-	NotSupportSpanKindWithOperation bool
+	SpanWriter        spanstore.Writer
+	SpanReader        spanstore.Reader
+	ArchiveSpanReader spanstore.Reader
+	ArchiveSpanWriter spanstore.Writer
+	DependencyWriter  dependencystore.Writer
+	DependencyReader  dependencystore.Reader
+	SamplingStore     samplingstore.Store
+	Fixtures          []*QueryFixtures
+
+	// TODO: remove this after all storage backends return spanKind from GetOperations
+	GetOperationsMissingSpanKind bool
+
+	// TODO: remove this after all storage backends return Source column from GetDependencies
+
+	GetDependenciesReturnsSource bool
+
+	// Skip Archive Test if not supported by the storage backend
+	SkipArchiveTest bool
+
 	// List of tests which has to be skipped, it can be regex too.
 	SkipList []string
+
 	// CleanUp() should ensure that the storage backend is clean before another test.
 	// called either before or after each test, and should be idempotent
-	CleanUp func() error
-
-	// Refresh() should ensure that the storage backend is up to date before being queried.
-	// called between set-up and queries in each test
-	Refresh func() error
+	CleanUp func(t *testing.T)
 }
 
 // === SpanStore Integration Tests ===
@@ -80,18 +85,35 @@ type QueryFixtures struct {
 
 func (s *StorageIntegration) cleanUp(t *testing.T) {
 	require.NotNil(t, s.CleanUp, "CleanUp function must be provided")
-	require.NoError(t, s.CleanUp())
+	s.CleanUp(t)
 }
 
-func (s *StorageIntegration) refresh(t *testing.T) {
-	require.NotNil(t, s.Refresh, "Refresh function must be provided")
-	require.NoError(t, s.Refresh())
+func SkipUnlessEnv(t *testing.T, storage ...string) {
+	env := os.Getenv("STORAGE")
+	for _, s := range storage {
+		if env == s {
+			return
+		}
+	}
+	t.Skipf("This test requires environment variable STORAGE=%s", strings.Join(storage, "|"))
+}
+
+var CassandraSkippedTests = []string{
+	"Tags_+_Operation_name_+_Duration_range",
+	"Tags_+_Duration_range",
+	"Tags_+_Operation_name_+_max_Duration",
+	"Tags_+_max_Duration",
+	"Operation_name_+_Duration_range",
+	"Duration_range",
+	"max_Duration",
+	"Multiple_Traces",
 }
 
 func (s *StorageIntegration) skipIfNeeded(t *testing.T) {
 	for _, pat := range s.SkipList {
-		ok, err := regexp.MatchString(pat, t.Name())
-		assert.NoError(t, err)
+		escapedPat := regexp.QuoteMeta(pat)
+		ok, err := regexp.MatchString(escapedPat, t.Name())
+		require.NoError(t, err)
 		if ok {
 			t.Skip()
 			return
@@ -99,13 +121,14 @@ func (s *StorageIntegration) skipIfNeeded(t *testing.T) {
 	}
 }
 
-func (s *StorageIntegration) waitForCondition(t *testing.T, predicate func(t *testing.T) bool) bool {
+func (*StorageIntegration) waitForCondition(t *testing.T, predicate func(t *testing.T) bool) bool {
+	const iterations = 100 // Will wait at most 100 seconds.
 	for i := 0; i < iterations; i++ {
-		t.Logf("Waiting for storage backend to update documents, iteration %d out of %d", i+1, iterations)
 		if predicate(t) {
 			return true
 		}
-		time.Sleep(100 * time.Millisecond) // Will wait up to 10 seconds at worst.
+		t.Logf("Waiting for storage backend to update documents, iteration %d out of %d", i+1, iterations)
+		time.Sleep(time.Second)
 	}
 	return predicate(t)
 }
@@ -116,12 +139,32 @@ func (s *StorageIntegration) testGetServices(t *testing.T) {
 
 	expected := []string{"example-service-1", "example-service-2", "example-service-3"}
 	s.loadParseAndWriteExampleTrace(t)
-	s.refresh(t)
 
 	var actual []string
 	found := s.waitForCondition(t, func(t *testing.T) bool {
-		actual, err := s.SpanReader.GetServices(context.Background())
+		var err error
+		actual, err = s.SpanReader.GetServices(context.Background())
 		require.NoError(t, err)
+		sort.Strings(actual)
+		t.Logf("Retrieved services: %v", actual)
+		if len(actual) > len(expected) {
+			// If the storage backend returns more services than expected, let's log traces for those
+			t.Log("🛑 Found unexpected services!")
+			for _, service := range actual {
+				traces, err := s.SpanReader.FindTraces(context.Background(), &spanstore.TraceQueryParameters{
+					ServiceName: service,
+				})
+				if err != nil {
+					t.Log(err)
+					continue
+				}
+				for _, trace := range traces {
+					for _, span := range trace.Spans {
+						t.Logf("span: Service: %s, TraceID: %s, Operation: %s", service, span.TraceID, span.OperationName)
+					}
+				}
+			}
+		}
 		return assert.ObjectsAreEqualValues(expected, actual)
 	})
 
@@ -131,6 +174,34 @@ func (s *StorageIntegration) testGetServices(t *testing.T) {
 	}
 }
 
+func (s *StorageIntegration) testArchiveTrace(t *testing.T) {
+	s.skipIfNeeded(t)
+	if s.SkipArchiveTest {
+		t.Skip("Skipping ArchiveTrace test because archive reader or writer is nil")
+	}
+	defer s.cleanUp(t)
+	tID := model.NewTraceID(uint64(11), uint64(22))
+	expected := &model.Span{
+		OperationName: "archive_span",
+		StartTime:     time.Now().Add(-time.Hour * 72 * 5).Truncate(time.Microsecond),
+		TraceID:       tID,
+		SpanID:        model.NewSpanID(55),
+		References:    []model.SpanRef{},
+		Process:       model.NewProcess("archived_service", model.KeyValues{}),
+	}
+
+	require.NoError(t, s.ArchiveSpanWriter.WriteSpan(context.Background(), expected))
+
+	var actual *model.Trace
+	found := s.waitForCondition(t, func(_ *testing.T) bool {
+		var err error
+		actual, err = s.ArchiveSpanReader.GetTrace(context.Background(), tID)
+		return err == nil && len(actual.Spans) == 1
+	})
+	require.True(t, found)
+	CompareTraces(t, &model.Trace{Spans: []*model.Span{expected}}, actual)
+}
+
 func (s *StorageIntegration) testGetLargeSpan(t *testing.T) {
 	s.skipIfNeeded(t)
 	defer s.cleanUp(t)
@@ -138,13 +209,12 @@ func (s *StorageIntegration) testGetLargeSpan(t *testing.T) {
 	t.Log("Testing Large Trace over 10K ...")
 	expected := s.loadParseAndWriteLargeTrace(t)
 	expectedTraceID := expected.Spans[0].TraceID
-	s.refresh(t)
 
 	var actual *model.Trace
-	found := s.waitForCondition(t, func(t *testing.T) bool {
+	found := s.waitForCondition(t, func(_ *testing.T) bool {
 		var err error
 		actual, err = s.SpanReader.GetTrace(context.Background(), expectedTraceID)
-		return err == nil && len(actual.Spans) == len(expected.Spans)
+		return err == nil && len(actual.Spans) >= len(expected.Spans)
 	})
 	if !assert.True(t, found) {
 		CompareTraces(t, expected, actual)
@@ -156,7 +226,7 @@ func (s *StorageIntegration) testGetOperations(t *testing.T) {
 	defer s.cleanUp(t)
 
 	var expected []spanstore.Operation
-	if s.NotSupportSpanKindWithOperation {
+	if s.GetOperationsMissingSpanKind {
 		expected = []spanstore.Operation{
 			{Name: "example-operation-1"},
 			{Name: "example-operation-3"},
@@ -164,13 +234,12 @@ func (s *StorageIntegration) testGetOperations(t *testing.T) {
 		}
 	} else {
 		expected = []spanstore.Operation{
-			{Name: "example-operation-1"},
+			{Name: "example-operation-1", SpanKind: "unspecified"},
 			{Name: "example-operation-3", SpanKind: "server"},
 			{Name: "example-operation-4", SpanKind: "client"},
 		}
 	}
 	s.loadParseAndWriteExampleTrace(t)
-	s.refresh(t)
 
 	var actual []spanstore.Operation
 	found := s.waitForCondition(t, func(t *testing.T) bool {
@@ -178,6 +247,10 @@ func (s *StorageIntegration) testGetOperations(t *testing.T) {
 		actual, err = s.SpanReader.GetOperations(context.Background(),
 			spanstore.OperationQueryParameters{ServiceName: "example-service-1"})
 		require.NoError(t, err)
+		sort.Slice(actual, func(i, j int) bool {
+			return actual[i].Name < actual[j].Name
+		})
+		t.Logf("Retrieved operations: %v", actual)
 		return assert.ObjectsAreEqualValues(expected, actual)
 	})
 
@@ -193,7 +266,6 @@ func (s *StorageIntegration) testGetTrace(t *testing.T) {
 
 	expected := s.loadParseAndWriteExampleTrace(t)
 	expectedTraceID := expected.Spans[0].TraceID
-	s.refresh(t)
 
 	var actual *model.Trace
 	found := s.waitForCondition(t, func(t *testing.T) bool {
@@ -209,7 +281,7 @@ func (s *StorageIntegration) testGetTrace(t *testing.T) {
 	}
 
 	t.Run("NotFound error", func(t *testing.T) {
-		fakeTraceID := model.TraceID{High: 0, Low: 0}
+		fakeTraceID := model.TraceID{High: 0, Low: 1}
 		trace, err := s.SpanReader.GetTrace(context.Background(), fakeTraceID)
 		assert.Equal(t, spanstore.ErrTraceNotFound, err)
 		assert.Nil(t, trace)
@@ -233,15 +305,13 @@ func (s *StorageIntegration) testFindTraces(t *testing.T) {
 			trace, ok := allTraceFixtures[traceFixture]
 			if !ok {
 				trace = s.getTraceFixture(t, traceFixture)
-				err := s.writeTrace(t, trace)
-				require.NoError(t, err, "Unexpected error when writing trace %s to storage", traceFixture)
+				s.writeTrace(t, trace)
 				allTraceFixtures[traceFixture] = trace
 			}
 			expected = append(expected, trace)
 		}
 		expectedTracesPerTestCase = append(expectedTracesPerTestCase, expected)
 	}
-	s.refresh(t)
 	for i, queryTestCase := range s.Fixtures {
 		t.Run(queryTestCase.Caption, func(t *testing.T) {
 			s.skipIfNeeded(t)
@@ -259,29 +329,30 @@ func (s *StorageIntegration) findTracesByQuery(t *testing.T, query *spanstore.Tr
 		traces, err = s.SpanReader.FindTraces(context.Background(), query)
 		require.NoError(t, err)
 		if len(expected) != len(traces) {
-			t.Logf("FindTraces: expected: %d, actual: %d", len(expected), len(traces))
+			t.Logf("Expecting certain number of traces: expected: %d, actual: %d", len(expected), len(traces))
+			return false
+		}
+		if spanCount(expected) != spanCount(traces) {
+			t.Logf("Excepting certain number of spans: expected: %d, actual: %d", spanCount(expected), spanCount(traces))
 			return false
 		}
 		return true
 	})
 	require.True(t, found)
-	tracesMatch(t, traces, expected)
 	return traces
 }
 
-func (s *StorageIntegration) writeTrace(t *testing.T, trace *model.Trace) error {
+func (s *StorageIntegration) writeTrace(t *testing.T, trace *model.Trace) {
+	t.Logf("%-23s Writing trace with %d spans", time.Now().Format("2006-01-02 15:04:05.999"), len(trace.Spans))
 	for _, span := range trace.Spans {
-		if err := s.SpanWriter.WriteSpan(context.Background(), span); err != nil {
-			return err
-		}
+		err := s.SpanWriter.WriteSpan(context.Background(), span)
+		require.NoError(t, err, "Not expecting error when writing trace to storage")
 	}
-	return nil
 }
 
 func (s *StorageIntegration) loadParseAndWriteExampleTrace(t *testing.T) *model.Trace {
 	trace := s.getTraceFixture(t, "example_trace")
-	err := s.writeTrace(t, trace)
-	require.NoError(t, err, "Not expecting error when writing example_trace to storage")
+	s.writeTrace(t, trace)
 	return trace
 }
 
@@ -294,16 +365,16 @@ func (s *StorageIntegration) loadParseAndWriteLargeTrace(t *testing.T) *model.Tr
 	for i := 1; i < 10008; i++ {
 		s := new(model.Span)
 		*s = *span
+		//nolint: gosec // G115
 		s.SpanID = model.SpanID(i)
 		s.StartTime = s.StartTime.Add(time.Second * time.Duration(i+1))
 		trace.Spans = append(trace.Spans, s)
 	}
-	err := s.writeTrace(t, trace)
-	require.NoError(t, err, "Not expecting error when writing example_trace to storage")
+	s.writeTrace(t, trace)
 	return trace
 }
 
-func (s *StorageIntegration) getTraceFixture(t *testing.T, fixture string) *model.Trace {
+func (*StorageIntegration) getTraceFixture(t *testing.T, fixture string) *model.Trace {
 	fileName := fmt.Sprintf("fixtures/traces/%s.json", fixture)
 	return getTraceFixtureExact(t, fileName)
 }
@@ -329,7 +400,7 @@ func LoadAndParseQueryTestCases(t *testing.T, queriesFile string) []*QueryFixtur
 	return queries
 }
 
-func loadAndParseJSON(t *testing.T, path string, object interface{}) {
+func loadAndParseJSON(t *testing.T, path string, object any) {
 	// #nosec
 	inStr, err := fixtures.ReadFile(path)
 	require.NoError(t, err, "Not expecting error when loading fixture %s", path)
@@ -343,16 +414,9 @@ func correctTime(json []byte) []byte {
 	now := time.Now().UTC()
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	twoDaysAgo := now.AddDate(0, 0, -2).Format("2006-01-02")
-	retString := strings.Replace(jsonString, "2017-01-26", yesterday, -1)
-	retString = strings.Replace(retString, "2017-01-25", twoDaysAgo, -1)
+	retString := strings.ReplaceAll(jsonString, "2017-01-26", yesterday)
+	retString = strings.ReplaceAll(retString, "2017-01-25", twoDaysAgo)
 	return []byte(retString)
-}
-
-func tracesMatch(t *testing.T, actual []*model.Trace, expected []*model.Trace) bool {
-	if !assert.Equal(t, len(expected), len(actual), "Expecting certain number of traces") {
-		return false
-	}
-	return assert.Equal(t, spanCount(expected), spanCount(actual), "Expecting certain number of spans")
 }
 
 func spanCount(traces []*model.Trace) int {
@@ -374,31 +438,117 @@ func (s *StorageIntegration) testGetDependencies(t *testing.T) {
 	s.skipIfNeeded(t)
 	defer s.cleanUp(t)
 
+	source := model.JaegerDependencyLinkSource
+	if !s.GetDependenciesReturnsSource {
+		source = ""
+	}
+
 	expected := []model.DependencyLink{
 		{
 			Parent:    "hello",
 			Child:     "world",
 			CallCount: uint64(1),
+			Source:    source,
 		},
 		{
 			Parent:    "world",
 			Child:     "hello",
 			CallCount: uint64(3),
+			Source:    source,
 		},
 	}
+
 	require.NoError(t, s.DependencyWriter.WriteDependencies(time.Now(), expected))
-	s.refresh(t)
-	actual, err := s.DependencyReader.GetDependencies(context.Background(), time.Now(), 5*time.Minute)
-	assert.NoError(t, err)
-	assert.EqualValues(t, expected, actual)
+
+	var actual []model.DependencyLink
+	found := s.waitForCondition(t, func(t *testing.T) bool {
+		var err error
+		actual, err = s.DependencyReader.GetDependencies(context.Background(), time.Now(), 5*time.Minute)
+		require.NoError(t, err)
+		sort.Slice(actual, func(i, j int) bool {
+			return actual[i].Parent < actual[j].Parent
+		})
+		return assert.ObjectsAreEqualValues(expected, actual)
+	})
+
+	if !assert.True(t, found) {
+		t.Log("\t Expected:", expected)
+		t.Log("\t Actual  :", actual)
+	}
 }
 
-// IntegrationTestAll runs all integration tests
-func (s *StorageIntegration) IntegrationTestAll(t *testing.T) {
+// === Sampling Store Integration Tests ===
+
+func (s *StorageIntegration) testGetThroughput(t *testing.T) {
+	s.skipIfNeeded(t)
+	if s.SamplingStore == nil {
+		t.Skip("Skipping GetThroughput test because sampling store is nil")
+		return
+	}
+	defer s.cleanUp(t)
+	start := time.Now()
+
+	s.insertThroughput(t)
+
+	expected := 2
+	var actual []*samplemodel.Throughput
+	_ = s.waitForCondition(t, func(t *testing.T) bool {
+		var err error
+		actual, err = s.SamplingStore.GetThroughput(start, start.Add(time.Second*time.Duration(10)))
+		require.NoError(t, err)
+		return assert.ObjectsAreEqualValues(expected, len(actual))
+	})
+	assert.Len(t, actual, expected)
+}
+
+func (s *StorageIntegration) testGetLatestProbability(t *testing.T) {
+	s.skipIfNeeded(t)
+	if s.SamplingStore == nil {
+		t.Skip("Skipping GetLatestProbability test because sampling store is nil")
+		return
+	}
+	defer s.cleanUp(t)
+
+	s.SamplingStore.InsertProbabilitiesAndQPS("newhostname1", samplemodel.ServiceOperationProbabilities{"new-srv3": {"op": 0.123}}, samplemodel.ServiceOperationQPS{"new-srv2": {"op": 11}})
+	s.SamplingStore.InsertProbabilitiesAndQPS("dell11eg843d", samplemodel.ServiceOperationProbabilities{"new-srv": {"op": 0.1}}, samplemodel.ServiceOperationQPS{"new-srv": {"op": 4}})
+
+	expected := samplemodel.ServiceOperationProbabilities{"new-srv": {"op": 0.1}}
+	var actual samplemodel.ServiceOperationProbabilities
+	found := s.waitForCondition(t, func(t *testing.T) bool {
+		var err error
+		actual, err = s.SamplingStore.GetLatestProbabilities()
+		require.NoError(t, err)
+		return assert.ObjectsAreEqualValues(expected, actual)
+	})
+	if !assert.True(t, found) {
+		t.Log("\t Expected:", expected)
+		t.Log("\t Actual  :", actual)
+	}
+}
+
+func (s *StorageIntegration) insertThroughput(t *testing.T) {
+	throughputs := []*samplemodel.Throughput{
+		{Service: "my-svc", Operation: "op"},
+		{Service: "our-svc", Operation: "op2"},
+	}
+	err := s.SamplingStore.InsertThroughput(throughputs)
+	require.NoError(t, err)
+}
+
+// RunAll runs all integration tests
+func (s *StorageIntegration) RunAll(t *testing.T) {
+	s.RunSpanStoreTests(t)
+	t.Run("ArchiveTrace", s.testArchiveTrace)
+	t.Run("GetDependencies", s.testGetDependencies)
+	t.Run("GetThroughput", s.testGetThroughput)
+	t.Run("GetLatestProbability", s.testGetLatestProbability)
+}
+
+// RunTestSpanstore runs only span related integration tests
+func (s *StorageIntegration) RunSpanStoreTests(t *testing.T) {
 	t.Run("GetServices", s.testGetServices)
 	t.Run("GetOperations", s.testGetOperations)
 	t.Run("GetTrace", s.testGetTrace)
 	t.Run("GetLargeSpans", s.testGetLargeSpan)
 	t.Run("FindTraces", s.testFindTraces)
-	t.Run("GetDependencies", s.testGetDependencies)
 }

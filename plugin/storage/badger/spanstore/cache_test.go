@@ -1,25 +1,15 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+
 package spanstore
 
 import (
-	"os"
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/model"
 )
@@ -40,8 +30,8 @@ func TestExpiredItems(t *testing.T) {
 		cache.Update("service1", "op2", expireTime)
 
 		services, err := cache.GetServices()
-		assert.NoError(t, err)
-		assert.Equal(t, 0, len(services)) // Everything should be expired
+		require.NoError(t, err)
+		assert.Empty(t, services) // Everything should be expired
 
 		// Expired service for operations
 
@@ -49,8 +39,8 @@ func TestExpiredItems(t *testing.T) {
 		cache.Update("service1", "op2", expireTime)
 
 		operations, err := cache.GetOperations("service1")
-		assert.NoError(t, err)
-		assert.Equal(t, 0, len(operations)) // Everything should be expired
+		require.NoError(t, err)
+		assert.Empty(t, operations) // Everything should be expired
 
 		// Expired operations, stable service
 
@@ -60,8 +50,8 @@ func TestExpiredItems(t *testing.T) {
 		cache.services["service1"] = uint64(time.Now().Unix() + 1e10)
 
 		operations, err = cache.GetOperations("service1")
-		assert.NoError(t, err)
-		assert.Equal(t, 0, len(operations)) // Everything should be expired
+		require.NoError(t, err)
+		assert.Empty(t, operations) // Everything should be expired
 	})
 }
 
@@ -109,17 +99,16 @@ func runWithBadger(t *testing.T, test func(store *badger.DB, t *testing.T)) {
 	opts := badger.DefaultOptions("")
 
 	opts.SyncWrites = false
-	dir, _ := os.MkdirTemp("", "badger")
+	dir := t.TempDir()
 	opts.Dir = dir
 	opts.ValueDir = dir
 
 	store, err := badger.Open(opts)
 	defer func() {
 		store.Close()
-		os.RemoveAll(dir)
 	}()
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	test(store, t)
 }

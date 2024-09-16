@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package metrics
 
@@ -48,7 +37,7 @@ func TestUnsupportedMetricsStorageType(t *testing.T) {
 	f, err := NewFactory(withConfig("foo"))
 	require.Error(t, err)
 	assert.Nil(t, f)
-	assert.EqualError(t, err, `unknown metrics type "foo". Valid types are [prometheus]`)
+	require.EqualError(t, err, `unknown metrics type "foo". Valid types are [prometheus]`)
 }
 
 func TestDisabledMetricsStorageType(t *testing.T) {
@@ -75,7 +64,7 @@ func TestCreateMetricsReader(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, reader)
 
-	assert.EqualError(t, err, `no "foo" backend registered for metrics store`)
+	require.EqualError(t, err, `no "foo" backend registered for metrics store`)
 }
 
 type configurable struct {

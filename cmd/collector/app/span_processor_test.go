@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -21,11 +10,12 @@ import (
 	"io"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/atomic"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/handler"
@@ -80,8 +70,9 @@ func TestBySvcMetrics(t *testing.T) {
 		}
 	}
 
-	for _, test := range tests {
+	testFn := func(t *testing.T, test TestCase) {
 		mb := metricstest.NewFactory(time.Hour)
+		defer mb.Backend.Stop()
 		logger := zap.NewNop()
 		serviceMetrics := mb.Namespace(metrics.NSOptions{Name: "service", Tags: nil})
 		hostMetrics := mb.Namespace(metrics.NSOptions{Name: "host", Tags: nil})
@@ -135,11 +126,11 @@ func TestBySvcMetrics(t *testing.T) {
 		if test.rootSpan {
 			if test.debug {
 				expected = append(expected, metricstest.ExpectedMetric{
-					Name: metricPrefix + ".traces.received|debug=true|format=" + format + "|sampler_type=unknown|svc=" + test.serviceName + "|transport=unknown", Value: 2,
+					Name: metricPrefix + ".traces.received|debug=true|format=" + format + "|sampler_type=unrecognized|svc=" + test.serviceName + "|transport=unknown", Value: 2,
 				})
 			} else {
 				expected = append(expected, metricstest.ExpectedMetric{
-					Name: metricPrefix + ".traces.received|debug=false|format=" + format + "|sampler_type=unknown|svc=" + test.serviceName + "|transport=unknown", Value: 2,
+					Name: metricPrefix + ".traces.received|debug=false|format=" + format + "|sampler_type=unrecognized|svc=" + test.serviceName + "|transport=unknown", Value: 2,
 				})
 			}
 		}
@@ -157,6 +148,11 @@ func TestBySvcMetrics(t *testing.T) {
 			})
 		}
 		mb.AssertCounterMetrics(t, expected...)
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%v", test), func(t *testing.T) {
+			testFn(t, test)
+		})
 	}
 }
 
@@ -190,7 +186,7 @@ func (n *fakeSpanWriter) WriteSpan(ctx context.Context, span *model.Span) error 
 	return n.err
 }
 
-func (n *fakeSpanWriter) Close() error {
+func (*fakeSpanWriter) Close() error {
 	return nil
 }
 
@@ -243,9 +239,9 @@ func TestSpanProcessor(t *testing.T) {
 	res, err := p.ProcessSpans(
 		[]*model.Span{{}}, // empty span should be enriched by sanitizers
 		processor.SpansOptions{SpanFormat: processor.JaegerSpanFormat})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []bool{true}, res)
-	assert.NoError(t, p.Close())
+	require.NoError(t, p.Close())
 	assert.Len(t, w.spans, 1)
 	assert.NotNil(t, w.spans[0].Process)
 	assert.NotEmpty(t, w.spans[0].Process.ServiceName)
@@ -257,6 +253,7 @@ func TestSpanProcessorErrors(t *testing.T) {
 		err: fmt.Errorf("some-error"),
 	}
 	mb := metricstest.NewFactory(time.Hour)
+	defer mb.Backend.Stop()
 	serviceMetrics := mb.Namespace(metrics.NSOptions{Name: "service", Tags: nil})
 	p := NewSpanProcessor(w,
 		nil,
@@ -272,10 +269,10 @@ func TestSpanProcessorErrors(t *testing.T) {
 			},
 		},
 	}, processor.SpansOptions{SpanFormat: processor.JaegerSpanFormat})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []bool{true}, res)
 
-	assert.NoError(t, p.Close())
+	require.NoError(t, p.Close())
 
 	assert.Equal(t, map[string]string{
 		"level": "error",
@@ -291,11 +288,14 @@ func TestSpanProcessorErrors(t *testing.T) {
 
 type blockingWriter struct {
 	sync.Mutex
+	inWriteSpan atomic.Int32
 }
 
-func (w *blockingWriter) WriteSpan(ctx context.Context, span *model.Span) error {
+func (w *blockingWriter) WriteSpan(context.Context, *model.Span) error {
+	w.inWriteSpan.Add(1)
 	w.Lock()
 	defer w.Unlock()
+	w.inWriteSpan.Add(-1)
 	return nil
 }
 
@@ -307,7 +307,7 @@ func TestSpanProcessorBusy(t *testing.T) {
 		Options.QueueSize(1),
 		Options.ReportBusy(true),
 	).(*spanProcessor)
-	defer assert.NoError(t, p.Close())
+	defer require.NoError(t, p.Close())
 
 	// block the writer so that the first span is read from the queue and blocks the processor,
 	// and either the second or the third span is rejected since the queue capacity is just 1.
@@ -332,17 +332,18 @@ func TestSpanProcessorBusy(t *testing.T) {
 		},
 	}, processor.SpansOptions{SpanFormat: processor.JaegerSpanFormat})
 
-	assert.Error(t, err, "expcting busy error")
+	require.Error(t, err, "expecting busy error")
 	assert.Nil(t, res)
 }
 
 func TestSpanProcessorWithNilProcess(t *testing.T) {
 	mb := metricstest.NewFactory(time.Hour)
+	defer mb.Backend.Stop()
 	serviceMetrics := mb.Namespace(metrics.NSOptions{Name: "service", Tags: nil})
 
 	w := &fakeSpanWriter{}
 	p := NewSpanProcessor(w, nil, Options.ServiceMetrics(serviceMetrics)).(*spanProcessor)
-	defer assert.NoError(t, p.Close())
+	defer require.NoError(t, p.Close())
 
 	p.saveSpan(&model.Span{}, "")
 
@@ -362,7 +363,7 @@ func TestSpanProcessorWithCollectorTags(t *testing.T) {
 	w := &fakeSpanWriter{}
 	p := NewSpanProcessor(w, nil, Options.CollectorTags(testCollectorTags)).(*spanProcessor)
 
-	defer assert.NoError(t, p.Close())
+	defer require.NoError(t, p.Close())
 	span := &model.Span{
 		Process: model.NewProcess("unit-test-service", []model.KeyValue{
 			{
@@ -434,12 +435,16 @@ func TestSpanProcessorCountSpan(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name, func(_ *testing.T) {
 			mb := metricstest.NewFactory(time.Hour)
+			defer mb.Backend.Stop()
 			m := mb.Namespace(metrics.NSOptions{})
 
 			w := &fakeSpanWriter{}
-			opts := []Option{Options.HostMetrics(m), Options.SpanSizeMetricsEnabled(tt.enableSpanMetrics)}
+			opts := []Option{
+				Options.HostMetrics(m),
+				Options.SpanSizeMetricsEnabled(tt.enableSpanMetrics),
+			}
 			if tt.enableDynQueueSizeMem {
 				opts = append(opts, Options.DynQueueSizeMemory(1000))
 			} else {
@@ -447,12 +452,19 @@ func TestSpanProcessorCountSpan(t *testing.T) {
 			}
 			p := NewSpanProcessor(w, nil, opts...).(*spanProcessor)
 			defer func() {
-				assert.NoError(t, p.Close())
+				require.NoError(t, p.Close())
 			}()
 			p.background(10*time.Millisecond, p.updateGauges)
 
 			p.processSpan(&model.Span{}, "")
-			assert.NotEqual(t, uint64(0), p.bytesProcessed)
+			if tt.enableSpanMetrics {
+				assert.Eventually(t,
+					func() bool { return p.spansProcessed.Load() > 0 },
+					time.Second,
+					time.Millisecond,
+				)
+				assert.Positive(t, p.spansProcessed.Load())
+			}
 
 			for i := 0; i < 10000; i++ {
 				_, g := mb.Snapshot()
@@ -554,8 +566,8 @@ func TestUpdateDynQueueSize(t *testing.T) {
 			p := newSpanProcessor(w, nil, Options.QueueSize(tt.initialCapacity), Options.DynQueueSizeWarmup(tt.warmup), Options.DynQueueSizeMemory(tt.sizeInBytes))
 			assert.EqualValues(t, tt.initialCapacity, p.queue.Capacity())
 
-			p.spansProcessed = atomic.NewUint64(tt.spansProcessed)
-			p.bytesProcessed = atomic.NewUint64(tt.bytesProcessed)
+			p.spansProcessed.Store(tt.spansProcessed)
+			p.bytesProcessed.Store(tt.bytesProcessed)
 
 			p.updateQueueSize()
 			assert.EqualValues(t, tt.expectedCapacity, p.queue.Capacity())
@@ -575,8 +587,8 @@ func TestStartDynQueueSizeUpdater(t *testing.T) {
 	p := newSpanProcessor(w, nil, Options.QueueSize(100), Options.DynQueueSizeWarmup(1000), Options.DynQueueSizeMemory(oneGiB))
 	assert.EqualValues(t, 100, p.queue.Capacity())
 
-	p.spansProcessed = atomic.NewUint64(1000)
-	p.bytesProcessed = atomic.NewUint64(10 * 1024 * p.spansProcessed.Load()) // 10KiB per span
+	p.spansProcessed.Store(1000)
+	p.bytesProcessed.Store(10 * 1024 * p.spansProcessed.Load()) // 10KiB per span
 
 	// 1024 ^ 3 / (10 * 1024) = 104857,6
 	// ideal queue size = 104857
@@ -584,14 +596,14 @@ func TestStartDynQueueSizeUpdater(t *testing.T) {
 
 	// we wait up to 50 milliseconds
 	for i := 0; i < 5; i++ {
-		if p.queue.Capacity() == 100 {
-			time.Sleep(10 * time.Millisecond)
-		} else {
+		if p.queue.Capacity() != 100 {
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	assert.EqualValues(t, 104857, p.queue.Capacity())
+	require.NoError(t, p.Close())
 }
 
 func TestAdditionalProcessors(t *testing.T) {
@@ -606,13 +618,13 @@ func TestAdditionalProcessors(t *testing.T) {
 			},
 		},
 	}, processor.SpansOptions{SpanFormat: processor.JaegerSpanFormat})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []bool{true}, res)
-	assert.NoError(t, p.Close())
+	require.NoError(t, p.Close())
 
 	// additional processor is called
 	count := 0
-	f := func(s *model.Span, t string) {
+	f := func(_ *model.Span, _ string) {
 		count++
 	}
 	p = NewSpanProcessor(w, []ProcessSpan{f}, Options.QueueSize(1))
@@ -623,9 +635,9 @@ func TestAdditionalProcessors(t *testing.T) {
 			},
 		},
 	}, processor.SpansOptions{SpanFormat: processor.JaegerSpanFormat})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []bool{true}, res)
-	assert.NoError(t, p.Close())
+	require.NoError(t, p.Close())
 	assert.Equal(t, 1, count)
 }
 
@@ -644,12 +656,53 @@ func TestSpanProcessorContextPropagation(t *testing.T) {
 	}, processor.SpansOptions{
 		Tenant: dummyTenant,
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, []bool{true}, res)
-	assert.NoError(t, p.Close())
+	require.NoError(t, p.Close())
 
 	// Verify that the dummy tenant from SpansOptions context made it to writer
-	assert.Equal(t, true, w.tenants[dummyTenant])
+	assert.True(t, w.tenants[dummyTenant])
 	// Verify no other tenantKey context values made it to writer
 	assert.True(t, reflect.DeepEqual(w.tenants, map[string]bool{dummyTenant: true}))
+}
+
+func TestSpanProcessorWithOnDroppedSpanOption(t *testing.T) {
+	var droppedOperations []string
+	customOnDroppedSpan := func(span *model.Span) {
+		droppedOperations = append(droppedOperations, span.OperationName)
+	}
+
+	w := &blockingWriter{}
+	p := NewSpanProcessor(w,
+		nil,
+		Options.NumWorkers(1),
+		Options.QueueSize(1),
+		Options.OnDroppedSpan(customOnDroppedSpan),
+		Options.ReportBusy(true),
+	).(*spanProcessor)
+	defer p.Close()
+
+	// Acquire the lock externally to force the writer to block.
+	w.Lock()
+	defer w.Unlock()
+
+	opts := processor.SpansOptions{SpanFormat: processor.JaegerSpanFormat}
+	_, err := p.ProcessSpans([]*model.Span{
+		{OperationName: "op1"},
+	}, opts)
+	require.NoError(t, err)
+
+	// Wait for the sole worker to pick the item from the queue and block
+	assert.Eventually(t,
+		func() bool { return w.inWriteSpan.Load() == 1 },
+		time.Second, time.Microsecond)
+
+	// Now the queue is empty again and can accept one more item, but no workers available.
+	// If we send two items, the last one will have to be dropped.
+	_, err = p.ProcessSpans([]*model.Span{
+		{OperationName: "op2"},
+		{OperationName: "op3"},
+	}, opts)
+	require.EqualError(t, err, processor.ErrBusy.Error())
+	assert.Equal(t, []string{"op3"}, droppedOperations)
 }

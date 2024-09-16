@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package handler
 
@@ -40,6 +29,8 @@ type mockSpanProcessor struct {
 	mux           sync.Mutex
 	spans         []*model.Span
 	tenants       map[string]bool
+	transport     processor.InboundTransport
+	spanFormat    processor.SpanFormat
 }
 
 func (p *mockSpanProcessor) ProcessSpans(spans []*model.Span, opts processor.SpansOptions) ([]bool, error) {
@@ -51,6 +42,8 @@ func (p *mockSpanProcessor) ProcessSpans(spans []*model.Span, opts processor.Spa
 		p.tenants = make(map[string]bool)
 	}
 	p.tenants[opts.Tenant] = true
+	p.transport = opts.InboundTransport
+	p.spanFormat = opts.SpanFormat
 	return oks, p.expectedError
 }
 
@@ -66,14 +59,28 @@ func (p *mockSpanProcessor) getTenants() map[string]bool {
 	return p.tenants
 }
 
+func (p *mockSpanProcessor) getTransport() processor.InboundTransport {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	return p.transport
+}
+
+func (p *mockSpanProcessor) getSpanFormat() processor.SpanFormat {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	return p.spanFormat
+}
+
 func (p *mockSpanProcessor) reset() {
 	p.mux.Lock()
 	defer p.mux.Unlock()
 	p.spans = nil
 	p.tenants = nil
+	p.transport = ""
+	p.spanFormat = ""
 }
 
-func (p *mockSpanProcessor) Close() error {
+func (*mockSpanProcessor) Close() error {
 	return nil
 }
 
@@ -84,13 +91,13 @@ func initializeGRPCTestServer(t *testing.T, beforeServe func(s *grpc.Server)) (*
 	require.NoError(t, err)
 	go func() {
 		err := server.Serve(lis)
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	}()
 	return server, lis.Addr()
 }
 
 func newClient(t *testing.T, addr net.Addr) (api_v2.CollectorServiceClient, *grpc.ClientConn) {
-	conn, err := grpc.Dial(addr.String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr.String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	return api_v2.NewCollectorServiceClient(conn), conn
 }
@@ -360,6 +367,49 @@ func TestGetTenant(t *testing.T) {
 				require.NoError(t, err)
 			}
 			assert.Equal(t, test.tenant, tenant)
+		})
+	}
+}
+
+func TestBatchConsumer(t *testing.T) {
+	tests := []struct {
+		name               string
+		batch              model.Batch
+		transport          processor.InboundTransport
+		spanFormat         processor.SpanFormat
+		expectedTransport  processor.InboundTransport
+		expectedSpanFormat processor.SpanFormat
+	}{
+		{
+			name: "batchconsumer passes provided span options to processor",
+			batch: model.Batch{
+				Process: &model.Process{ServiceName: "testservice"},
+				Spans: []*model.Span{
+					{OperationName: "test-op", Process: &model.Process{ServiceName: "foo"}},
+				},
+			},
+			transport:          processor.GRPCTransport,
+			spanFormat:         processor.OTLPSpanFormat,
+			expectedTransport:  processor.GRPCTransport,
+			expectedSpanFormat: processor.OTLPSpanFormat,
+		},
+	}
+
+	logger, _ := testutils.NewLogger()
+	for _, tc := range tests {
+		t.Parallel()
+		t.Run(tc.name, func(t *testing.T) {
+			processor := mockSpanProcessor{}
+			batchConsumer := newBatchConsumer(logger, &processor, tc.transport, tc.spanFormat, tenancy.NewManager(&tenancy.Options{}))
+			err := batchConsumer.consume(context.Background(), &model.Batch{
+				Process: &model.Process{ServiceName: "testservice"},
+				Spans: []*model.Span{
+					{OperationName: "test-op", Process: &model.Process{ServiceName: "foo"}},
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.transport, processor.getTransport())
+			assert.Equal(t, tc.expectedSpanFormat, processor.getSpanFormat())
 		})
 	}
 }

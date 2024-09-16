@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -29,6 +18,7 @@ const (
 	ilmPolicyName    = "es.ilm-policy-name"
 	timeout          = "timeout"
 	skipDependencies = "skip-dependencies"
+	adaptiveSampling = "adaptive-sampling"
 )
 
 // Config holds the global configurations for the es rollover, common to all actions
@@ -42,6 +32,7 @@ type Config struct {
 	UseILM           bool
 	Timeout          int
 	SkipDependencies bool
+	AdaptiveSampling bool
 }
 
 // AddFlags adds flags
@@ -54,6 +45,7 @@ func AddFlags(flags *flag.FlagSet) {
 	flags.String(ilmPolicyName, "jaeger-ilm-policy", "The name of the ILM policy to use if ILM is active")
 	flags.Int(timeout, 120, "Number of seconds to wait for master node response")
 	flags.Bool(skipDependencies, false, "Disable rollover for dependencies index")
+	flags.Bool(adaptiveSampling, false, "Enable rollover for adaptive sampling index")
 }
 
 // InitFromViper initializes config from viper.Viper.
@@ -69,4 +61,5 @@ func (c *Config) InitFromViper(v *viper.Viper) {
 	c.UseILM = v.GetBool(useILM)
 	c.Timeout = v.GetInt(timeout)
 	c.SkipDependencies = v.GetBool(skipDependencies)
+	c.AdaptiveSampling = v.GetBool(adaptiveSampling)
 }

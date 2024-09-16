@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package badger
 
@@ -18,26 +7,26 @@ import (
 	"testing"
 	"time"
 
-	assert "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/pkg/config"
 )
 
-func TestDefaultOptionsParsing(t *testing.T) {
-	opts := NewOptions("badger")
-	v, command := config.Viperize(opts.AddFlags)
+func TestDefaultConfigParsing(t *testing.T) {
+	cfg := DefaultConfig()
+	v, command := config.Viperize(cfg.AddFlags)
 	command.ParseFlags([]string{})
-	opts.InitFromViper(v, zap.NewNop())
+	cfg.InitFromViper(v, zap.NewNop())
 
-	assert.True(t, opts.GetPrimary().Ephemeral)
-	assert.False(t, opts.GetPrimary().SyncWrites)
-	assert.Equal(t, time.Duration(72*time.Hour), opts.GetPrimary().SpanStoreTTL)
+	assert.True(t, cfg.Ephemeral)
+	assert.False(t, cfg.SyncWrites)
+	assert.Equal(t, time.Duration(72*time.Hour), cfg.TTL.Spans)
 }
 
-func TestParseOptions(t *testing.T) {
-	opts := NewOptions("badger")
-	v, command := config.Viperize(opts.AddFlags)
+func TestParseConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	v, command := config.Viperize(cfg.AddFlags)
 	command.ParseFlags([]string{
 		"--badger.ephemeral=false",
 		"--badger.consistency=true",
@@ -45,22 +34,22 @@ func TestParseOptions(t *testing.T) {
 		"--badger.directory-value=/mnt/slow/badger",
 		"--badger.span-store-ttl=168h",
 	})
-	opts.InitFromViper(v, zap.NewNop())
+	cfg.InitFromViper(v, zap.NewNop())
 
-	assert.False(t, opts.GetPrimary().Ephemeral)
-	assert.True(t, opts.GetPrimary().SyncWrites)
-	assert.Equal(t, time.Duration(168*time.Hour), opts.GetPrimary().SpanStoreTTL)
-	assert.Equal(t, "/var/lib/badger", opts.GetPrimary().KeyDirectory)
-	assert.Equal(t, "/mnt/slow/badger", opts.GetPrimary().ValueDirectory)
-	assert.False(t, opts.GetPrimary().ReadOnly)
+	assert.False(t, cfg.Ephemeral)
+	assert.True(t, cfg.SyncWrites)
+	assert.Equal(t, time.Duration(168*time.Hour), cfg.TTL.Spans)
+	assert.Equal(t, "/var/lib/badger", cfg.Directories.Keys)
+	assert.Equal(t, "/mnt/slow/badger", cfg.Directories.Values)
+	assert.False(t, cfg.ReadOnly)
 }
 
-func TestReadOnlyOptions(t *testing.T) {
-	opts := NewOptions("badger")
-	v, command := config.Viperize(opts.AddFlags)
+func TestReadOnlyConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	v, command := config.Viperize(cfg.AddFlags)
 	command.ParseFlags([]string{
 		"--badger.read-only=true",
 	})
-	opts.InitFromViper(v, zap.NewNop())
-	assert.True(t, opts.GetPrimary().ReadOnly)
+	cfg.InitFromViper(v, zap.NewNop())
+	assert.True(t, cfg.ReadOnly)
 }

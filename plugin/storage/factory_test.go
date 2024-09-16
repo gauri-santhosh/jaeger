@@ -1,37 +1,24 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2018 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package storage
 
 import (
 	"errors"
+	"expvar"
 	"flag"
 	"fmt"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	"github.com/jaegertracing/jaeger/internal/metrics/fork"
-	"github.com/jaegertracing/jaeger/internal/metricstest"
 	"github.com/jaegertracing/jaeger/pkg/config"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
 	"github.com/jaegertracing/jaeger/storage"
@@ -40,11 +27,6 @@ import (
 	"github.com/jaegertracing/jaeger/storage/mocks"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 	spanStoreMocks "github.com/jaegertracing/jaeger/storage/spanstore/mocks"
-)
-
-var (
-	_ storage.Factory        = new(Factory)
-	_ storage.ArchiveFactory = new(Factory)
 )
 
 func defaultCfg() FactoryConfig {
@@ -86,7 +68,7 @@ func TestNewFactory(t *testing.T) {
 	expected := "unknown storage type" // could be 'x' or 'y' since code iterates through map.
 	assert.Equal(t, expected, err.Error()[0:len(expected)])
 
-	assert.NoError(t, f.Close())
+	require.NoError(t, f.Close())
 }
 
 func TestClose(t *testing.T) {
@@ -98,7 +80,7 @@ func TestClose(t *testing.T) {
 		},
 		FactoryConfig: FactoryConfig{SpanWriterTypes: []string{storageType}},
 	}
-	assert.EqualError(t, f.Close(), err.Error())
+	require.EqualError(t, f.Close(), err.Error())
 }
 
 func TestInitialize(t *testing.T) {
@@ -113,12 +95,12 @@ func TestInitialize(t *testing.T) {
 	m := metrics.NullFactory
 	l := zap.NewNop()
 	mock.On("Initialize", m, l).Return(nil)
-	assert.NoError(t, f.Initialize(m, l))
+	require.NoError(t, f.Initialize(m, l))
 
 	mock = new(mocks.Factory)
 	f.factories[cassandraStorageType] = mock
 	mock.On("Initialize", m, l).Return(errors.New("init-error"))
-	assert.EqualError(t, f.Initialize(m, l), "init-error")
+	require.EqualError(t, f.Initialize(m, l), "init-error")
 }
 
 func TestCreate(t *testing.T) {
@@ -140,21 +122,21 @@ func TestCreate(t *testing.T) {
 
 	r, err := f.CreateSpanReader()
 	assert.Equal(t, spanReader, r)
-	assert.EqualError(t, err, "span-reader-error")
+	require.EqualError(t, err, "span-reader-error")
 
 	w, err := f.CreateSpanWriter()
 	assert.Nil(t, w)
-	assert.EqualError(t, err, "span-writer-error")
+	require.EqualError(t, err, "span-writer-error")
 
 	d, err := f.CreateDependencyReader()
 	assert.Equal(t, depReader, d)
-	assert.EqualError(t, err, "dep-reader-error")
+	require.EqualError(t, err, "dep-reader-error")
 
 	_, err = f.CreateArchiveSpanReader()
-	assert.EqualError(t, err, "archive storage not supported")
+	require.EqualError(t, err, "archive storage not supported")
 
 	_, err = f.CreateArchiveSpanWriter()
-	assert.EqualError(t, err, "archive storage not supported")
+	require.EqualError(t, err, "archive storage not supported")
 
 	mock.On("CreateSpanWriter").Return(spanWriter, nil)
 	m := metrics.NullFactory
@@ -162,13 +144,13 @@ func TestCreate(t *testing.T) {
 	mock.On("Initialize", m, l).Return(nil)
 	f.Initialize(m, l)
 	w, err = f.CreateSpanWriter()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, spanWriter, w)
 }
 
 func TestCreateDownsamplingWriter(t *testing.T) {
 	f, err := NewFactory(defaultCfg())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, f.factories[cassandraStorageType])
 	mock := new(mocks.Factory)
 	f.factories[cassandraStorageType] = mock
@@ -192,7 +174,7 @@ func TestCreateDownsamplingWriter(t *testing.T) {
 			f.DownsamplingRatio = param.ratio
 			f.Initialize(m, l)
 			newWriter, err := f.CreateSpanWriter()
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			// Currently directly assertEqual doesn't work since DownsamplingWriter initializes with different
 			// address for hashPool. The following workaround checks writer type instead
 			assert.True(t, strings.HasPrefix(reflect.TypeOf(newWriter).String(), param.writerType))
@@ -218,7 +200,7 @@ func TestCreateMulti(t *testing.T) {
 
 	w, err := f.CreateSpanWriter()
 	assert.Nil(t, w)
-	assert.EqualError(t, err, "span-writer-error")
+	require.EqualError(t, err, "span-writer-error")
 
 	mock.On("CreateSpanWriter").Return(spanWriter, nil)
 	mock2.On("CreateSpanWriter").Return(spanWriter2, nil)
@@ -228,7 +210,7 @@ func TestCreateMulti(t *testing.T) {
 	mock2.On("Initialize", m, l).Return(nil)
 	f.Initialize(m, l)
 	w, err = f.CreateSpanWriter()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, spanstore.NewCompositeWriter(spanWriter, spanWriter2), w)
 }
 
@@ -251,11 +233,11 @@ func TestCreateArchive(t *testing.T) {
 
 	ar, err := f.CreateArchiveSpanReader()
 	assert.Equal(t, archiveSpanReader, ar)
-	assert.EqualError(t, err, "archive-span-reader-error")
+	require.EqualError(t, err, "archive-span-reader-error")
 
 	aw, err := f.CreateArchiveSpanWriter()
 	assert.Equal(t, archiveSpanWriter, aw)
-	assert.EqualError(t, err, "archive-span-writer-error")
+	require.EqualError(t, err, "archive-span-writer-error")
 }
 
 func TestCreateError(t *testing.T) {
@@ -270,36 +252,36 @@ func TestCreateError(t *testing.T) {
 	{
 		r, err := f.CreateSpanReader()
 		assert.Nil(t, r)
-		assert.EqualError(t, err, expectedErr)
+		require.EqualError(t, err, expectedErr)
 	}
 
 	{
 		w, err := f.CreateSpanWriter()
 		assert.Nil(t, w)
-		assert.EqualError(t, err, expectedErr)
+		require.EqualError(t, err, expectedErr)
 	}
 
 	{
 		d, err := f.CreateDependencyReader()
 		assert.Nil(t, d)
-		assert.EqualError(t, err, expectedErr)
+		require.EqualError(t, err, expectedErr)
 	}
 
 	{
 		r, err := f.CreateArchiveSpanReader()
 		assert.Nil(t, r)
-		assert.EqualError(t, err, expectedErr)
+		require.EqualError(t, err, expectedErr)
 	}
 
 	{
 		w, err := f.CreateArchiveSpanWriter()
 		assert.Nil(t, w)
-		assert.EqualError(t, err, expectedErr)
+		require.EqualError(t, err, expectedErr)
 	}
 }
 
 func TestAllSamplingStorageTypes(t *testing.T) {
-	assert.Equal(t, AllSamplingStorageTypes(), []string{"cassandra", "memory"})
+	assert.Equal(t, []string{"cassandra", "memory", "badger"}, AllSamplingStorageTypes())
 }
 
 func TestCreateSamplingStoreFactory(t *testing.T) {
@@ -311,13 +293,13 @@ func TestCreateSamplingStoreFactory(t *testing.T) {
 	// if not specified sampling store is chosen from available factories
 	ssFactory, err := f.CreateSamplingStoreFactory()
 	assert.Equal(t, f.factories[cassandraStorageType], ssFactory)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// if not specified and there's no compatible factories then return nil
 	delete(f.factories, cassandraStorageType)
 	ssFactory, err = f.CreateSamplingStoreFactory()
 	assert.Nil(t, ssFactory)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// if an incompatible factory is specified return err
 	cfg := defaultCfg()
@@ -326,7 +308,7 @@ func TestCreateSamplingStoreFactory(t *testing.T) {
 	require.NoError(t, err)
 	ssFactory, err = f.CreateSamplingStoreFactory()
 	assert.Nil(t, ssFactory)
-	assert.EqualError(t, err, "storage factory of type elasticsearch does not support sampling store")
+	require.EqualError(t, err, "storage factory of type elasticsearch does not support sampling store")
 
 	// if a compatible factory is specified then return it
 	cfg.SamplingStorageType = "cassandra"
@@ -334,7 +316,7 @@ func TestCreateSamplingStoreFactory(t *testing.T) {
 	require.NoError(t, err)
 	ssFactory, err = f.CreateSamplingStoreFactory()
 	assert.Equal(t, ssFactory, f.factories["cassandra"])
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 type configurable struct {
@@ -381,56 +363,43 @@ func TestParsingDownsamplingRatio(t *testing.T) {
 		"--downsampling.ratio=1.5",
 		"--downsampling.hashsalt=jaeger",
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	f.InitFromViper(v, zap.NewNop())
 
-	assert.Equal(t, f.FactoryConfig.DownsamplingRatio, 1.0)
-	assert.Equal(t, f.FactoryConfig.DownsamplingHashSalt, "jaeger")
+	assert.InDelta(t, 1.0, f.FactoryConfig.DownsamplingRatio, 0.01)
+	assert.Equal(t, "jaeger", f.FactoryConfig.DownsamplingHashSalt)
 
 	err = command.ParseFlags([]string{
 		"--downsampling.ratio=0.5",
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	f.InitFromViper(v, zap.NewNop())
-	assert.Equal(t, f.FactoryConfig.DownsamplingRatio, 0.5)
+	assert.InDelta(t, 0.5, f.FactoryConfig.DownsamplingRatio, 0.01)
 }
 
 func TestDefaultDownsamplingWithAddFlags(t *testing.T) {
 	f := Factory{}
 	v, command := config.Viperize(f.AddFlags)
 	err := command.ParseFlags([]string{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	f.InitFromViper(v, zap.NewNop())
 
-	assert.Equal(t, f.FactoryConfig.DownsamplingRatio, defaultDownsamplingRatio)
-	assert.Equal(t, f.FactoryConfig.DownsamplingHashSalt, defaultDownsamplingHashSalt)
+	assert.InDelta(t, defaultDownsamplingRatio, f.FactoryConfig.DownsamplingRatio, 0.01)
+	assert.Equal(t, defaultDownsamplingHashSalt, f.FactoryConfig.DownsamplingHashSalt)
 
 	err = command.ParseFlags([]string{
 		"--downsampling.ratio=0.5",
 	})
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestPublishOpts(t *testing.T) {
 	f, err := NewFactory(defaultCfg())
 	require.NoError(t, err)
-
-	baseMetrics := metricstest.NewFactory(time.Second)
-	forkFactory := metricstest.NewFactory(time.Second)
-	metricsFactory := fork.New("internal", forkFactory, baseMetrics)
-	f.metricsFactory = metricsFactory
-
-	// This method is called inside factory.Initialize method
 	f.publishOpts()
 
-	forkFactory.AssertGaugeMetrics(t, metricstest.ExpectedMetric{
-		Name:  "internal." + downsamplingRatio,
-		Value: int(f.DownsamplingRatio),
-	})
-	forkFactory.AssertGaugeMetrics(t, metricstest.ExpectedMetric{
-		Name:  "internal." + spanStorageType + "-" + f.SpanReaderType,
-		Value: 1,
-	})
+	assert.EqualValues(t, 1, expvar.Get(downsamplingRatio).(*expvar.Int).Value())
+	assert.EqualValues(t, 1, expvar.Get(spanStorageType+"-"+f.SpanReaderType).(*expvar.Int).Value())
 }
 
 type errorFactory struct {
@@ -442,19 +411,19 @@ var (
 	_ io.Closer       = (*errorFactory)(nil)
 )
 
-func (e errorFactory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger) error {
+func (errorFactory) Initialize(metrics.Factory, *zap.Logger) error {
 	panic("implement me")
 }
 
-func (e errorFactory) CreateSpanReader() (spanstore.Reader, error) {
+func (errorFactory) CreateSpanReader() (spanstore.Reader, error) {
 	panic("implement me")
 }
 
-func (e errorFactory) CreateSpanWriter() (spanstore.Writer, error) {
+func (errorFactory) CreateSpanWriter() (spanstore.Writer, error) {
 	panic("implement me")
 }
 
-func (e errorFactory) CreateDependencyReader() (dependencystore.Reader, error) {
+func (errorFactory) CreateDependencyReader() (dependencystore.Reader, error) {
 	panic("implement me")
 }
 

@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package queue
 
@@ -21,14 +10,12 @@ import (
 	"time"
 	"unsafe"
 
-	uatomic "go.uber.org/atomic"
-
 	"github.com/jaegertracing/jaeger/pkg/metrics"
 )
 
 // Consumer consumes data from a bounded queue
 type Consumer interface {
-	Consume(item interface{})
+	Consume(item any)
 }
 
 // BoundedQueue implements a producer-consumer exchange similar to a ring buffer queue,
@@ -39,27 +26,27 @@ type Consumer interface {
 type BoundedQueue struct {
 	workers       int
 	stopWG        sync.WaitGroup
-	size          *uatomic.Uint32
-	capacity      *uatomic.Uint32
-	stopped       *uatomic.Uint32
-	items         *chan interface{}
-	onDroppedItem func(item interface{})
+	size          atomic.Int32
+	capacity      atomic.Uint32
+	stopped       atomic.Uint32
+	items         *chan any
+	onDroppedItem func(item any)
 	factory       func() Consumer
 	stopCh        chan struct{}
 }
 
 // NewBoundedQueue constructs the new queue of specified capacity, and with an optional
 // callback for dropped items (e.g. useful to emit metrics).
-func NewBoundedQueue(capacity int, onDroppedItem func(item interface{})) *BoundedQueue {
-	queue := make(chan interface{}, capacity)
-	return &BoundedQueue{
+func NewBoundedQueue(capacity int, onDroppedItem func(item any)) *BoundedQueue {
+	queue := make(chan any, capacity)
+	bq := &BoundedQueue{
 		onDroppedItem: onDroppedItem,
 		items:         &queue,
 		stopCh:        make(chan struct{}),
-		capacity:      uatomic.NewUint32(uint32(capacity)),
-		stopped:       uatomic.NewUint32(0),
-		size:          uatomic.NewUint32(0),
 	}
+	//nolint: gosec // G115
+	bq.capacity.Store(uint32(capacity))
+	return bq
 }
 
 // StartConsumersWithFactory creates a given number of consumers consuming items
@@ -80,7 +67,7 @@ func (q *BoundedQueue) StartConsumersWithFactory(num int, factory func() Consume
 				select {
 				case item, ok := <-queue:
 					if ok {
-						q.size.Sub(1)
+						q.size.Add(-1)
 						consumer.Consume(item)
 					} else {
 						// channel closed, finish worker
@@ -98,23 +85,23 @@ func (q *BoundedQueue) StartConsumersWithFactory(num int, factory func() Consume
 
 // ConsumerFunc is an adapter to allow the use of
 // a consume function callback as a Consumer.
-type ConsumerFunc func(item interface{})
+type ConsumerFunc func(item any)
 
 // Consume calls c(item)
-func (c ConsumerFunc) Consume(item interface{}) {
+func (c ConsumerFunc) Consume(item any) {
 	c(item)
 }
 
 // StartConsumers starts a given number of goroutines consuming items from the queue
 // and passing them into the consumer callback.
-func (q *BoundedQueue) StartConsumers(num int, callback func(item interface{})) {
+func (q *BoundedQueue) StartConsumers(num int, callback func(item any)) {
 	q.StartConsumersWithFactory(num, func() Consumer {
 		return ConsumerFunc(callback)
 	})
 }
 
 // Produce is used by the producer to submit new item to the queue. Returns false in case of queue overflow.
-func (q *BoundedQueue) Produce(item interface{}) bool {
+func (q *BoundedQueue) Produce(item any) bool {
 	if q.stopped.Load() != 0 {
 		q.onDroppedItem(item)
 		return false
@@ -135,7 +122,7 @@ func (q *BoundedQueue) Produce(item interface{}) bool {
 		return true
 	default:
 		// should not happen, as overflows should have been captured earlier
-		q.size.Sub(1)
+		q.size.Add(-1)
 		if q.onDroppedItem != nil {
 			q.onDroppedItem(item)
 		}
@@ -188,7 +175,7 @@ func (q *BoundedQueue) Resize(capacity int) bool {
 	}
 
 	previous := *q.items
-	queue := make(chan interface{}, capacity)
+	queue := make(chan any, capacity)
 
 	// swap queues
 	// #nosec
@@ -201,6 +188,7 @@ func (q *BoundedQueue) Resize(capacity int) bool {
 		close(previous)
 
 		// update the capacity
+		//nolint: gosec // G115
 		q.capacity.Store(uint32(capacity))
 	}
 

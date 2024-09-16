@@ -1,43 +1,32 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 
-	"github.com/opentracing/opentracing-go"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	jaegerClientConfig "github.com/uber/jaeger-client-go/config"
-	jaegerClientZapLog "github.com/uber/jaeger-client-go/log/zap"
 	_ "go.uber.org/automaxprocs"
 	"go.uber.org/zap"
 
-	"github.com/jaegertracing/jaeger/cmd/docs"
-	"github.com/jaegertracing/jaeger/cmd/env"
-	"github.com/jaegertracing/jaeger/cmd/flags"
+	"github.com/jaegertracing/jaeger/cmd/internal/docs"
+	"github.com/jaegertracing/jaeger/cmd/internal/env"
+	"github.com/jaegertracing/jaeger/cmd/internal/flags"
+	"github.com/jaegertracing/jaeger/cmd/internal/printconfig"
+	"github.com/jaegertracing/jaeger/cmd/internal/status"
 	"github.com/jaegertracing/jaeger/cmd/query/app"
 	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
-	"github.com/jaegertracing/jaeger/cmd/status"
-	"github.com/jaegertracing/jaeger/internal/metrics/jlibadapter"
 	"github.com/jaegertracing/jaeger/pkg/bearertoken"
 	"github.com/jaegertracing/jaeger/pkg/config"
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
+	"github.com/jaegertracing/jaeger/pkg/telemetery"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/pkg/version"
 	metricsPlugin "github.com/jaegertracing/jaeger/plugin/metrics"
@@ -66,7 +55,7 @@ func main() {
 		Use:   "jaeger-query",
 		Short: "Jaeger query service provides a Web UI and an API for accessing trace data.",
 		Long:  `Jaeger query service provides a Web UI and an API for accessing trace data.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ /* args */ []string) error {
 			if err := svc.Start(v); err != nil {
 				return err
 			}
@@ -75,31 +64,19 @@ func main() {
 			metricsFactory := baseFactory.Namespace(metrics.NSOptions{Name: "query"})
 			version.NewInfoMetrics(metricsFactory)
 
-			traceCfg := &jaegerClientConfig.Configuration{
-				ServiceName: "jaeger-query",
-				Sampler: &jaegerClientConfig.SamplerConfig{
-					Type:  "const",
-					Param: 1.0,
-				},
-				RPCMetrics: true,
-			}
-			traceCfg, err = traceCfg.FromEnv()
-			if err != nil {
-				logger.Fatal("Failed to read tracer configuration", zap.Error(err))
-			}
-			tracer, closer, err := traceCfg.NewTracer(
-				jaegerClientConfig.Metrics(jlibadapter.NewAdapter(svc.MetricsFactory)),
-				jaegerClientConfig.Logger(jaegerClientZapLog.NewLogger(logger)),
-			)
-			if err != nil {
-				logger.Fatal("Failed to initialize tracer", zap.Error(err))
-			}
-			defer closer.Close()
-			opentracing.SetGlobalTracer(tracer)
 			queryOpts, err := new(app.QueryOptions).InitFromViper(v, logger)
 			if err != nil {
 				logger.Fatal("Failed to configure query service", zap.Error(err))
 			}
+
+			jt := jtracer.NoOp()
+			if queryOpts.EnableTracing {
+				jt, err = jtracer.New("jaeger-query")
+				if err != nil {
+					logger.Fatal("Failed to create tracer", zap.Error(err))
+				}
+			}
+
 			// TODO: Need to figure out set enable/disable propagation on storage plugins.
 			v.Set(bearertoken.StoragePropagationKey, queryOpts.BearerTokenPropagation)
 			storageFactory.InitFromViper(v, logger)
@@ -126,16 +103,15 @@ func main() {
 				dependencyReader,
 				*queryServiceOptions)
 			tm := tenancy.NewManager(&queryOpts.Tenancy)
-			server, err := app.NewServer(svc.Logger, queryService, metricsQueryService, queryOpts, tm, tracer)
+			telset := telemetery.Setting{
+				Logger:         logger,
+				TracerProvider: jt.OTEL,
+				ReportStatus:   telemetery.HCAdapter(svc.HC()),
+			}
+			server, err := app.NewServer(queryService, metricsQueryService, queryOpts, tm, telset)
 			if err != nil {
 				logger.Fatal("Failed to create server", zap.Error(err))
 			}
-
-			go func() {
-				for s := range server.HealthCheckStatus() {
-					svc.SetHealthCheckStatus(s)
-				}
-			}()
 
 			if err := server.Start(); err != nil {
 				logger.Fatal("Could not start servers", zap.Error(err))
@@ -146,6 +122,9 @@ func main() {
 				if err := storageFactory.Close(); err != nil {
 					logger.Error("Failed to close storage factory", zap.Error(err))
 				}
+				if err = jt.Close(context.Background()); err != nil {
+					logger.Fatal("Error shutting down tracer provider", zap.Error(err))
+				}
 			})
 			return nil
 		},
@@ -155,6 +134,7 @@ func main() {
 	command.AddCommand(env.Command())
 	command.AddCommand(docs.Command(v))
 	command.AddCommand(status.Command(v, ports.QueryAdminHTTP))
+	command.AddCommand(printconfig.Command(v))
 
 	config.AddFlags(
 		v,

@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -20,12 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"go.uber.org/atomic"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/internal/metricstest"
@@ -208,14 +198,14 @@ func TestSpanWriter(t *testing.T) {
 				w.session.On("Query", stringMatcher(tagIndex), matchOnce()).Return(tagsQuery)
 				w.session.On("Query", stringMatcher(durationIndex), matchOnce()).Return(durationNoOperationQuery)
 
-				w.writer.serviceNamesWriter = func(serviceName string) error { return testCase.serviceNameError }
-				w.writer.operationNamesWriter = func(operation dbmodel.Operation) error { return testCase.serviceNameError }
+				w.writer.serviceNamesWriter = func(_ /* serviceName */ string) error { return testCase.serviceNameError }
+				w.writer.operationNamesWriter = func(_ dbmodel.Operation) error { return testCase.serviceNameError }
 				err := w.writer.WriteSpan(context.Background(), span)
 
 				if testCase.expectedError == "" {
-					assert.NoError(t, err)
+					require.NoError(t, err)
 				} else {
-					assert.EqualError(t, err, testCase.expectedError)
+					require.EqualError(t, err, testCase.expectedError)
 				}
 				for _, expectedLog := range testCase.expectedLogs {
 					assert.Contains(t, w.logBuffer.String(), expectedLog)
@@ -236,17 +226,17 @@ func TestSpanWriterSaveServiceNameAndOperationName(t *testing.T) {
 		expectedError        string
 	}{
 		{
-			serviceNamesWriter:   func(serviceName string) error { return nil },
-			operationNamesWriter: func(operation dbmodel.Operation) error { return nil },
+			serviceNamesWriter:   func(_ /* serviceName */ string) error { return nil },
+			operationNamesWriter: func(_ dbmodel.Operation) error { return nil },
 		},
 		{
-			serviceNamesWriter:   func(serviceName string) error { return expectedErr },
-			operationNamesWriter: func(operation dbmodel.Operation) error { return nil },
+			serviceNamesWriter:   func(_ /* serviceName */ string) error { return expectedErr },
+			operationNamesWriter: func(_ dbmodel.Operation) error { return nil },
 			expectedError:        "some error",
 		},
 		{
-			serviceNamesWriter:   func(serviceName string) error { return nil },
-			operationNamesWriter: func(operation dbmodel.Operation) error { return expectedErr },
+			serviceNamesWriter:   func(_ /* serviceName */ string) error { return nil },
+			operationNamesWriter: func(_ dbmodel.Operation) error { return expectedErr },
 			expectedError:        "some error",
 		},
 	}
@@ -261,9 +251,9 @@ func TestSpanWriterSaveServiceNameAndOperationName(t *testing.T) {
 					OperationName: "operation",
 				})
 			if testCase.expectedError == "" {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			} else {
-				assert.EqualError(t, err, testCase.expectedError)
+				require.EqualError(t, err, testCase.expectedError)
 			}
 		})
 	}
@@ -298,8 +288,8 @@ func TestSpanWriterSkippingTags(t *testing.T) {
 
 func TestStorageMode_IndexOnly(t *testing.T) {
 	withSpanWriter(0, func(w *spanWriterTest) {
-		w.writer.serviceNamesWriter = func(serviceName string) error { return nil }
-		w.writer.operationNamesWriter = func(operation dbmodel.Operation) error { return nil }
+		w.writer.serviceNamesWriter = func(_ /* serviceName */ string) error { return nil }
+		w.writer.operationNamesWriter = func(_ dbmodel.Operation) error { return nil }
 		span := &model.Span{
 			TraceID: model.NewTraceID(0, 1),
 			Process: &model.Process{
@@ -325,7 +315,7 @@ func TestStorageMode_IndexOnly(t *testing.T) {
 
 		err := w.writer.WriteSpan(context.Background(), span)
 
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		serviceNameQuery.AssertExpectations(t)
 		serviceOperationNameQuery.AssertExpectations(t)
 		durationNoOperationQuery.AssertExpectations(t)
@@ -341,8 +331,8 @@ var filterEverything = func(*dbmodel.Span, int) bool {
 func TestStorageMode_IndexOnly_WithFilter(t *testing.T) {
 	withSpanWriter(0, func(w *spanWriterTest) {
 		w.writer.indexFilter = filterEverything
-		w.writer.serviceNamesWriter = func(serviceName string) error { return nil }
-		w.writer.operationNamesWriter = func(operation dbmodel.Operation) error { return nil }
+		w.writer.serviceNamesWriter = func(_ /* serviceName */ string) error { return nil }
+		w.writer.operationNamesWriter = func(_ dbmodel.Operation) error { return nil }
 		span := &model.Span{
 			TraceID: model.NewTraceID(0, 1),
 			Process: &model.Process{
@@ -350,7 +340,7 @@ func TestStorageMode_IndexOnly_WithFilter(t *testing.T) {
 			},
 		}
 		err := w.writer.WriteSpan(context.Background(), span)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		w.session.AssertExpectations(t)
 		w.session.AssertNotCalled(t, "Query", stringMatcher(serviceOperationIndex), matchEverything())
 		w.session.AssertNotCalled(t, "Query", stringMatcher(serviceNameIndex), matchEverything())
@@ -360,14 +350,17 @@ func TestStorageMode_IndexOnly_WithFilter(t *testing.T) {
 
 func TestStorageMode_IndexOnly_FirehoseSpan(t *testing.T) {
 	withSpanWriter(0, func(w *spanWriterTest) {
-		serviceWritten := atomic.NewString("")
-		operationWritten := &atomic.Value{}
+		var serviceWritten atomic.Pointer[string]
+		var operationWritten atomic.Pointer[dbmodel.Operation]
+		empty := ""
+		serviceWritten.Store(&empty)
+		operationWritten.Store(&dbmodel.Operation{})
 		w.writer.serviceNamesWriter = func(serviceName string) error {
-			serviceWritten.Store(serviceName)
+			serviceWritten.Store(&serviceName)
 			return nil
 		}
 		w.writer.operationNamesWriter = func(operation dbmodel.Operation) error {
-			operationWritten.Store(operation)
+			operationWritten.Store(&operation)
 			return nil
 		}
 		span := &model.Span{
@@ -394,22 +387,22 @@ func TestStorageMode_IndexOnly_FirehoseSpan(t *testing.T) {
 		w.session.On("Query", stringMatcher(serviceOperationIndex), matchEverything()).Return(serviceOperationNameQuery)
 
 		err := w.writer.WriteSpan(context.Background(), span)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		w.session.AssertExpectations(t)
 		w.session.AssertNotCalled(t, "Query", stringMatcher(tagIndex), matchEverything())
 		w.session.AssertNotCalled(t, "Query", stringMatcher(durationIndex), matchEverything())
-		assert.Equal(t, "planet-express", serviceWritten.Load())
+		assert.Equal(t, "planet-express", *serviceWritten.Load())
 		assert.Equal(t, dbmodel.Operation{
 			ServiceName:   "planet-express",
-			SpanKind:      "",
+			SpanKind:      "unspecified",
 			OperationName: "package-delivery",
-		}, operationWritten.Load())
+		}, *operationWritten.Load())
 	}, StoreIndexesOnly())
 }
 
 func TestStorageMode_StoreWithoutIndexing(t *testing.T) {
 	withSpanWriter(0, func(w *spanWriterTest) {
-		w.writer.serviceNamesWriter = func(serviceName string) error {
+		w.writer.serviceNamesWriter = func(_ /* serviceName */ string) error {
 			assert.Fail(t, "Non indexing store shouldn't index")
 			return nil
 		}
@@ -425,7 +418,7 @@ func TestStorageMode_StoreWithoutIndexing(t *testing.T) {
 
 		err := w.writer.WriteSpan(context.Background(), span)
 
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		spanQuery.AssertExpectations(t)
 		w.session.AssertExpectations(t)
 		w.session.AssertNotCalled(t, "Query", stringMatcher(serviceNameIndex), matchEverything())

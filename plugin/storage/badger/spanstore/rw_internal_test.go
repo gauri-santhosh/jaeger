@@ -1,16 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+
 package spanstore
 
 import (
@@ -20,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -38,11 +29,11 @@ func TestEncodingTypes(t *testing.T) {
 
 		sw.encodingType = jsonEncoding
 		err := sw.WriteSpan(context.Background(), &testSpan)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		tr, err := rw.GetTrace(context.Background(), model.TraceID{Low: 0, High: 1})
-		assert.NoError(t, err)
-		assert.Equal(t, 1, len(tr.Spans))
+		require.NoError(t, err)
+		assert.Len(t, tr.Spans, 1)
 	})
 
 	// Unknown encoding write
@@ -55,7 +46,7 @@ func TestEncodingTypes(t *testing.T) {
 
 		sw.encodingType = 0x04
 		err := sw.WriteSpan(context.Background(), &testSpan)
-		assert.EqualError(t, err, "unknown encoding type: 0x04")
+		require.EqualError(t, err, "unknown encoding type: 0x04")
 	})
 
 	// Unknown encoding reader
@@ -67,7 +58,7 @@ func TestEncodingTypes(t *testing.T) {
 		rw := NewTraceReader(store, cache)
 
 		err := sw.WriteSpan(context.Background(), &testSpan)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		startTime := model.TimeAsEpochMicroseconds(testSpan.StartTime)
 
@@ -84,7 +75,7 @@ func TestEncodingTypes(t *testing.T) {
 		})
 
 		_, err = rw.GetTrace(context.Background(), model.TraceID{Low: 0, High: 1})
-		assert.EqualError(t, err, "unknown encoding type: 0x04")
+		require.EqualError(t, err, "unknown encoding type: 0x04")
 	})
 }
 
@@ -92,10 +83,10 @@ func TestDecodeErrorReturns(t *testing.T) {
 	garbage := []byte{0x08}
 
 	_, err := decodeValue(garbage, protoEncoding)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	_, err = decodeValue(garbage, jsonEncoding)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestDuplicateTraceIDDetection(t *testing.T) {
@@ -113,7 +104,7 @@ func TestDuplicateTraceIDDetection(t *testing.T) {
 				testSpan.SpanID = model.SpanID(rand.Uint64())
 				testSpan.StartTime = origStartTime.Add(time.Duration(rand.Int31n(8000)) * time.Millisecond)
 				err := sw.WriteSpan(context.Background(), &testSpan)
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 		}
 
@@ -124,8 +115,8 @@ func TestDuplicateTraceIDDetection(t *testing.T) {
 			StartTimeMin: testSpan.StartTime.Add(-1 * time.Hour),
 		})
 
-		assert.NoError(t, err)
-		assert.Equal(t, 128, len(traces))
+		require.NoError(t, err)
+		assert.Len(t, traces, 128)
 	})
 }
 
@@ -182,7 +173,7 @@ func TestMergeJoin(t *testing.T) {
 	}
 
 	merged := mergeJoinIds(left, right)
-	assert.Equal(16, len(merged))
+	assert.Len(merged, 16)
 
 	// Check order
 	assert.Equal(uint32(15), binary.BigEndian.Uint32(merged[15]))
@@ -195,6 +186,6 @@ func TestMergeJoin(t *testing.T) {
 	// Different size, some equalities
 
 	merged = mergeJoinIds(left[0:3], right[1:7])
-	assert.Equal(2, len(merged))
+	assert.Len(merged, 2)
 	assert.Equal(uint32(2), binary.BigEndian.Uint32(merged[1]))
 }

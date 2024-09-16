@@ -1,16 +1,5 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package tlscfg
 
@@ -20,9 +9,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/config/configtls"
 	"go.uber.org/zap"
 )
 
@@ -182,7 +173,61 @@ func TestOptionsToConfig(t *testing.T) {
 					assert.Equal(t, &c, cert)
 				}
 			}
-			assert.NoError(t, test.options.Close())
+			require.NoError(t, test.options.Close())
+		})
+	}
+}
+
+func TestToOtelClientConfig(t *testing.T) {
+	testCases := []struct {
+		name     string
+		options  Options
+		expected configtls.ClientConfig
+	}{
+		{
+			name: "insecure",
+			options: Options{
+				Enabled: false,
+			},
+			expected: configtls.ClientConfig{
+				Insecure: true,
+			},
+		},
+		{
+			name: "secure with skip host verify",
+			options: Options{
+				Enabled:        true,
+				SkipHostVerify: true,
+				ServerName:     "example.com",
+				CAPath:         "path/to/ca.pem",
+				CertPath:       "path/to/cert.pem",
+				KeyPath:        "path/to/key.pem",
+				CipherSuites:   []string{"TLS_RSA_WITH_AES_128_CBC_SHA"},
+				MinVersion:     "1.2",
+				MaxVersion:     "1.3",
+				ReloadInterval: 24 * time.Hour,
+			},
+			expected: configtls.ClientConfig{
+				Insecure:           false,
+				InsecureSkipVerify: true,
+				ServerName:         "example.com",
+				Config: configtls.Config{
+					CAFile:         "path/to/ca.pem",
+					CertFile:       "path/to/cert.pem",
+					KeyFile:        "path/to/key.pem",
+					CipherSuites:   []string{"TLS_RSA_WITH_AES_128_CBC_SHA"},
+					MinVersion:     "1.2",
+					MaxVersion:     "1.3",
+					ReloadInterval: 24 * time.Hour,
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := tc.options.ToOtelClientConfig()
+			assert.Equal(t, tc.expected, actual)
 		})
 	}
 }

@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -138,7 +127,7 @@ func (s *SpanWriter) Close() error {
 }
 
 // WriteSpan saves the span into Cassandra
-func (s *SpanWriter) WriteSpan(ctx context.Context, span *model.Span) error {
+func (s *SpanWriter) WriteSpan(_ context.Context, span *model.Span) error {
 	ds := dbmodel.FromDomain(span)
 	if s.storageMode&storeFlag == storeFlag {
 		if err := s.writeSpan(span, ds); err != nil {
@@ -153,7 +142,7 @@ func (s *SpanWriter) WriteSpan(ctx context.Context, span *model.Span) error {
 	return nil
 }
 
-func (s *SpanWriter) writeSpan(span *model.Span, ds *dbmodel.Span) error {
+func (s *SpanWriter) writeSpan(_ *model.Span, ds *dbmodel.Span) error {
 	mainQuery := s.session.Query(
 		insertSpan,
 		ds.TraceID,
@@ -179,7 +168,7 @@ func (s *SpanWriter) writeIndexes(span *model.Span, ds *dbmodel.Span) error {
 	spanKind, _ := span.GetSpanKind()
 	if err := s.saveServiceNameAndOperationName(dbmodel.Operation{
 		ServiceName:   ds.ServiceName,
-		SpanKind:      spanKind,
+		SpanKind:      spanKind.String(),
 		OperationName: ds.OperationName,
 	}); err != nil {
 		// should this be a soft failure?
@@ -251,6 +240,7 @@ func (s *SpanWriter) indexByDuration(span *dbmodel.Span, startTime time.Time) er
 }
 
 func (s *SpanWriter) indexByService(span *dbmodel.Span) error {
+	//nolint: gosec // G115
 	bucketNo := uint64(span.SpanHash) % defaultNumBuckets
 	query := s.session.Query(serviceNameIndex)
 	q := query.Bind(span.Process.ServiceName, bucketNo, span.StartTime, span.TraceID)
@@ -264,7 +254,7 @@ func (s *SpanWriter) indexByOperation(span *dbmodel.Span) error {
 }
 
 // shouldIndexTag checks to see if the tag is json or not, if it's UTF8 valid and it's not too large
-func (s *SpanWriter) shouldIndexTag(tag dbmodel.TagInsertion) bool {
+func (*SpanWriter) shouldIndexTag(tag dbmodel.TagInsertion) bool {
 	isJSON := func(s string) bool {
 		var js json.RawMessage
 		// poor man's string-is-a-json check shortcircuits full unmarshalling
@@ -278,7 +268,7 @@ func (s *SpanWriter) shouldIndexTag(tag dbmodel.TagInsertion) bool {
 		!isJSON(tag.TagValue)
 }
 
-func (s *SpanWriter) logError(span *dbmodel.Span, err error, msg string, logger *zap.Logger) error {
+func (*SpanWriter) logError(span *dbmodel.Span, err error, msg string, logger *zap.Logger) error {
 	logger.
 		With(zap.String("trace_id", span.TraceID.String())).
 		With(zap.Int64("span_id", span.SpanID)).

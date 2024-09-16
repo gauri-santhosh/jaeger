@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -19,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/badger/v4"
 
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 )
@@ -130,6 +119,7 @@ func (c *CacheStore) Update(service, operation string, expireTime uint64) {
 // GetOperations returns all operations for a specific service & spanKind traced by Jaeger
 func (c *CacheStore) GetOperations(service string) ([]spanstore.Operation, error) {
 	operations := make([]string, 0, len(c.services))
+	//nolint: gosec // G115
 	t := uint64(time.Now().Unix())
 	c.cacheLock.Lock()
 	defer c.cacheLock.Unlock()
@@ -166,6 +156,7 @@ func (c *CacheStore) GetOperations(service string) ([]spanstore.Operation, error
 // GetServices returns all services traced by Jaeger
 func (c *CacheStore) GetServices() ([]string, error) {
 	services := make([]string, 0, len(c.services))
+	//nolint: gosec // G115
 	t := uint64(time.Now().Unix())
 	c.cacheLock.Lock()
 	// Fetch the items

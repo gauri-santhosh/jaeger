@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package memory
 
@@ -26,7 +15,6 @@ import (
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/model/adjuster"
-	"github.com/jaegertracing/jaeger/pkg/memory/config"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 )
@@ -36,7 +24,7 @@ type Store struct {
 	sync.RWMutex
 	// Each tenant gets a copy of default config.
 	// In the future this can be extended to contain per-tenant configuration.
-	defaultConfig config.Configuration
+	defaultConfig Configuration
 	perTenant     map[string]*Tenant
 }
 
@@ -48,24 +36,24 @@ type Tenant struct {
 	services   map[string]struct{}
 	operations map[string]map[spanstore.Operation]struct{}
 	deduper    adjuster.Adjuster
-	config     config.Configuration
+	config     Configuration
 	index      int
 }
 
 // NewStore creates an unbounded in-memory store
 func NewStore() *Store {
-	return WithConfiguration(config.Configuration{MaxTraces: 0})
+	return WithConfiguration(Configuration{MaxTraces: 0})
 }
 
 // WithConfiguration creates a new in memory storage based on the given configuration
-func WithConfiguration(configuration config.Configuration) *Store {
+func WithConfiguration(cfg Configuration) *Store {
 	return &Store{
-		defaultConfig: configuration,
+		defaultConfig: cfg,
 		perTenant:     make(map[string]*Tenant),
 	}
 }
 
-func newTenant(cfg config.Configuration) *Tenant {
+func newTenant(cfg Configuration) *Tenant {
 	return &Tenant{
 		ids:        make([]*model.TraceID, cfg.MaxTraces),
 		traces:     map[model.TraceID]*model.Trace{},
@@ -162,7 +150,7 @@ func (st *Store) WriteSpan(ctx context.Context, span *model.Span) error {
 	spanKind, _ := span.GetSpanKind()
 	operation := spanstore.Operation{
 		Name:     span.OperationName,
-		SpanKind: spanKind,
+		SpanKind: spanKind.String(),
 	}
 
 	if _, ok := m.operations[span.Process.ServiceName][operation]; !ok {
@@ -187,7 +175,6 @@ func (st *Store) WriteSpan(ctx context.Context, span *model.Span) error {
 			// update the ring with the trace id
 			m.ids[m.index] = &span.TraceID
 		}
-
 	}
 	m.traces[span.TraceID].Spans = append(m.traces[span.TraceID].Spans, span)
 
@@ -279,7 +266,7 @@ func (st *Store) FindTraces(ctx context.Context, query *spanstore.TraceQueryPara
 }
 
 // FindTraceIDs is not implemented.
-func (m *Store) FindTraceIDs(ctx context.Context, query *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
+func (*Store) FindTraceIDs(context.Context, *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -338,4 +325,11 @@ func flattenTags(span *model.Span) model.KeyValues {
 		retMe = append(retMe, l.Fields...)
 	}
 	return retMe
+}
+
+// purge supports Purger interface.
+func (st *Store) purge(context.Context) {
+	st.Lock()
+	st.perTenant = make(map[string]*Tenant)
+	st.Unlock()
 }

@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -21,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/badger/v4"
 	"github.com/gogo/protobuf/proto"
 
 	"github.com/jaegertracing/jaeger/model"
@@ -65,7 +54,8 @@ func NewSpanWriter(db *badger.DB, c *CacheStore, ttl time.Duration) *SpanWriter 
 }
 
 // WriteSpan writes the encoded span as well as creates indexes with defined TTL
-func (w *SpanWriter) WriteSpan(ctx context.Context, span *model.Span) error {
+func (w *SpanWriter) WriteSpan(_ context.Context, span *model.Span) error {
+	//nolint: gosec // G115
 	expireTime := uint64(time.Now().Add(w.ttl).Unix())
 	startTime := model.TimeAsEpochMicroseconds(span.StartTime)
 
@@ -138,7 +128,7 @@ func createIndexKey(indexPrefixKey byte, value []byte, startTime uint64, traceID
 	return key
 }
 
-func (w *SpanWriter) createBadgerEntry(key []byte, value []byte, expireTime uint64) *badger.Entry {
+func (*SpanWriter) createBadgerEntry(key []byte, value []byte, expireTime uint64) *badger.Entry {
 	return &badger.Entry{
 		Key:       key,
 		Value:     value,

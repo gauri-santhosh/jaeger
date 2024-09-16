@@ -76,12 +76,6 @@ the source code for the UI assets (requires Node.js 6+).
 The assets must be compiled first with `make build-ui`, which runs Node.js build and then
 packages the assets into a Go file that is `.gitignore`-ed.
 
-The packaged assets can be enabled by providing a build tag `ui`, for example:
-
-```
-$ go run -tags ui ./cmd/all-in-one/main.go
-```
-
 `make run-all-in-one` essentially runs Jaeger all-in-one by combining both of the above
 steps into a single `make` command.
 
@@ -100,7 +94,7 @@ github.com/jaegertracing/jaeger
       main.go
   crossdock/                - Cross-repo integration test configuration
   examples/
-      hotrod/               - Demo application that uses OpenTracing API
+      hotrod/               - Demo application that demonstrates the use of tracing instrumentation
   idl/                      - (submodule) https://github.com/jaegertracing/jaeger-idl
   jaeger-ui/                - (submodule) https://github.com/jaegertracing/jaeger-ui
   model/                    - Where models are kept, e.g. Process, Span, Trace
@@ -132,7 +126,7 @@ github.com/jaegertracing/jaeger
 
 ## Imports grouping
 
-This projects follows the following pattern for grouping imports in Go files:
+This project follows the following pattern for grouping imports in Go files:
 
 - imports from standard library
 - imports from other projects
@@ -213,7 +207,7 @@ After the merge make sure referenced issues were closed.
 * Ensure all references to the flag's variables have been removed in code.
 * Ensure a "Breaking Changes" entry is added in the [CHANGELOG](./CHANGELOG.md) indicating which CLI flag
 is being removed and which CLI flag should be used in favor of this removed flag.
-  
+
 For example:
 ```
 * Remove deprecated flags `--old-flag`, please use `--new-flag` ([#1234](<pull-request URL>), [@myusername](https://github.com/myusername))

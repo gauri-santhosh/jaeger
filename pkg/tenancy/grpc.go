@@ -1,16 +1,5 @@
 // Copyright (c) 2022 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package tenancy
 
@@ -68,7 +57,7 @@ func directlyAttachedTenant(ctx context.Context) bool {
 // NewGuardingStreamInterceptor blocks handling of streams whose tenancy header doesn't meet tenancy requirements.
 // It also ensures the tenant is directly in the context, rather than context metadata.
 func NewGuardingStreamInterceptor(tc *Manager) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		tenant, err := getValidTenant(ss.Context(), tc)
 		if err != nil {
 			return err
@@ -89,7 +78,7 @@ func NewGuardingStreamInterceptor(tc *Manager) grpc.StreamServerInterceptor {
 func tenantFromMetadata(md metadata.MD, tenancyHeader string) (string, error) {
 	tenants := md.Get(tenancyHeader)
 	if len(tenants) < 1 {
-		return "", status.Errorf(codes.PermissionDenied, "missing tenant header")
+		return "", status.Errorf(codes.Unauthenticated, "missing tenant header")
 	} else if len(tenants) > 1 {
 		return "", status.Errorf(codes.PermissionDenied, "extra tenant header")
 	}
@@ -100,7 +89,7 @@ func tenantFromMetadata(md metadata.MD, tenancyHeader string) (string, error) {
 // NewGuardingUnaryInterceptor blocks handling of RPCs whose tenancy header doesn't meet tenancy requirements.
 // It also ensures the tenant is directly in the context, rather than context metadata.
 func NewGuardingUnaryInterceptor(tc *Manager) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		tenant, err := getValidTenant(ctx, tc)
 		if err != nil {
 			return nil, err
@@ -119,7 +108,7 @@ func NewClientUnaryInterceptor(tc *Manager) grpc.UnaryClientInterceptor {
 	return grpc.UnaryClientInterceptor(func(
 		ctx context.Context,
 		method string,
-		req, reply interface{},
+		req, reply any,
 		cc *grpc.ClientConn,
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,

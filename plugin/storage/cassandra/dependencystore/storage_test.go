@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dependencystore
 
@@ -24,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/internal/metricstest"
@@ -70,7 +60,7 @@ func TestVersionIsValid(t *testing.T) {
 
 func TestInvalidVersion(t *testing.T) {
 	_, err := NewDependencyStore(&mocks.Session{}, metrics.NullFactory, zap.NewNop(), versionEnumEnd)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestDependencyStoreWrite(t *testing.T) {
@@ -94,8 +84,8 @@ func TestDependencyStoreWrite(t *testing.T) {
 				query := &mocks.Query{}
 				query.On("Exec").Return(nil)
 
-				var args []interface{}
-				captureArgs := mock.MatchedBy(func(v []interface{}) bool {
+				var args []any
+				captureArgs := mock.MatchedBy(func(v []any) bool {
 					args = v
 					return true
 				})
@@ -112,7 +102,7 @@ func TestDependencyStoreWrite(t *testing.T) {
 					},
 				}
 				err := s.storage.WriteDependencies(ts, dependencies)
-				assert.NoError(t, err)
+				require.NoError(t, err)
 
 				assert.Len(t, args, 3)
 				if d, ok := args[0].(time.Time); ok {
@@ -189,7 +179,7 @@ func TestDependencyStoreGetDependencies(t *testing.T) {
 		testCase := tc // capture loop var
 		t.Run(testCase.caption, func(t *testing.T) {
 			withDepStore(testCase.version, func(s *depStorageTest) {
-				scanMatcher := func() interface{} {
+				scanMatcher := func() any {
 					deps := [][]Dependency{
 						{
 							{Parent: "a", Child: "b", CallCount: 1},
@@ -200,7 +190,7 @@ func TestDependencyStoreGetDependencies(t *testing.T) {
 							{Parent: "b", Child: "c", CallCount: 1},
 						},
 					}
-					scanFunc := func(args []interface{}) bool {
+					scanFunc := func(args []any) bool {
 						if len(deps) == 0 {
 							return false
 						}
@@ -231,7 +221,7 @@ func TestDependencyStoreGetDependencies(t *testing.T) {
 				deps, err := s.storage.GetDependencies(context.Background(), time.Now(), 48*time.Hour)
 
 				if testCase.expectedError == "" {
-					assert.NoError(t, err)
+					require.NoError(t, err)
 					expected := []model.DependencyLink{
 						{Parent: "a", Child: "b", CallCount: 1, Source: model.JaegerDependencyLinkSource},
 						{Parent: "b", Child: "c", CallCount: 1, Source: model.JaegerDependencyLinkSource},
@@ -240,7 +230,7 @@ func TestDependencyStoreGetDependencies(t *testing.T) {
 					}
 					assert.Equal(t, expected, deps)
 				} else {
-					assert.EqualError(t, err, testCase.expectedError)
+					require.EqualError(t, err, testCase.expectedError)
 				}
 				for _, expectedLog := range testCase.expectedLogs {
 					assert.True(t, strings.Contains(s.logBuffer.String(), expectedLog), "Log must contain %s, but was %s", expectedLog, s.logBuffer.String())
@@ -266,6 +256,6 @@ func TestGetBuckets(t *testing.T) {
 	assert.Equal(t, expected, getBuckets(start, end))
 }
 
-func matchEverything() interface{} {
-	return mock.MatchedBy(func(v []interface{}) bool { return true })
+func matchEverything() any {
+	return mock.MatchedBy(func([]any) bool { return true })
 }

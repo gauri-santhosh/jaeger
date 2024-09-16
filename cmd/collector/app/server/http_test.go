@@ -1,16 +1,5 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package server
 
@@ -26,7 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 
 	"github.com/jaegertracing/jaeger/cmd/collector/app/handler"
 	"github.com/jaegertracing/jaeger/internal/metricstest"
@@ -45,7 +33,7 @@ func TestFailToListenHTTP(t *testing.T) {
 		Logger:   logger,
 	})
 	assert.Nil(t, server)
-	assert.EqualError(t, err, "listen tcp: address -1: invalid port")
+	require.EqualError(t, err, "listen tcp: address -1: invalid port")
 }
 
 func TestCreateTLSHTTPServerError(t *testing.T) {
@@ -64,27 +52,31 @@ func TestCreateTLSHTTPServerError(t *testing.T) {
 		TLSConfig:   tlsCfg,
 	}
 	_, err := StartHTTPServer(params)
-	assert.NotNil(t, err)
+	require.Error(t, err)
+	defer params.TLSConfig.Close()
 }
 
 func TestSpanCollectorHTTP(t *testing.T) {
+	mFact := metricstest.NewFactory(time.Hour)
+	defer mFact.Backend.Stop()
 	logger, _ := zap.NewDevelopment()
 	params := &HTTPServerParams{
-		Handler:        handler.NewJaegerSpanHandler(logger, &mockSpanProcessor{}),
-		SamplingStore:  &mockSamplingStore{},
-		MetricsFactory: metricstest.NewFactory(time.Hour),
-		HealthCheck:    healthcheck.New(),
-		Logger:         logger,
+		Handler:          handler.NewJaegerSpanHandler(logger, &mockSpanProcessor{}),
+		SamplingProvider: &mockSamplingProvider{},
+		MetricsFactory:   mFact,
+		HealthCheck:      healthcheck.New(),
+		Logger:           logger,
 	}
 
 	server := httptest.NewServer(nil)
-	defer server.Close()
 
 	serveHTTP(server.Config, server.Listener, params)
 
 	response, err := http.Post(server.URL, "", nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, response)
+	defer response.Body.Close()
+	defer server.Close()
 }
 
 func TestSpanCollectorHTTPS(t *testing.T) {
@@ -94,7 +86,6 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 		clientTLS         tlscfg.Options
 		expectError       bool
 		expectClientError bool
-		expectServerFail  bool
 	}{
 		{
 			name: "should fail with TLS client to untrusted TLS server",
@@ -109,7 +100,6 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 			},
 			expectError:       true,
 			expectClientError: true,
-			expectServerFail:  false,
 		},
 		{
 			name: "should fail with TLS client to trusted TLS server with incorrect hostname",
@@ -125,7 +115,6 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 			},
 			expectError:       true,
 			expectClientError: true,
-			expectServerFail:  false,
 		},
 		{
 			name: "should pass with TLS client to trusted TLS server with correct hostname",
@@ -139,9 +128,6 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 				CAPath:     testCertKeyLocation + "/example-CA-cert.pem",
 				ServerName: "example.com",
 			},
-			expectError:       false,
-			expectClientError: false,
-			expectServerFail:  false,
 		},
 		{
 			name: "should fail with TLS client without cert to trusted TLS server requiring cert",
@@ -156,8 +142,6 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 				CAPath:     testCertKeyLocation + "/example-CA-cert.pem",
 				ServerName: "example.com",
 			},
-			expectError:       false,
-			expectServerFail:  false,
 			expectClientError: true,
 		},
 		{
@@ -175,9 +159,6 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 				CertPath:   testCertKeyLocation + "/example-client-cert.pem",
 				KeyPath:    testCertKeyLocation + "/example-client-key.pem",
 			},
-			expectError:       false,
-			expectServerFail:  false,
-			expectClientError: false,
 		},
 		{
 			name: "should fail with TLS client without cert to trusted TLS server requiring cert from a different CA",
@@ -194,34 +175,36 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 				CertPath:   testCertKeyLocation + "/example-client-cert.pem",
 				KeyPath:    testCertKeyLocation + "/example-client-key.pem",
 			},
-			expectError:       false,
-			expectServerFail:  false,
 			expectClientError: true,
 		},
 	}
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			logger := zaptest.NewLogger(t)
+			// Cannot reliably use zaptest.NewLogger(t) because it causes race condition
+			// See https://github.com/jaegertracing/jaeger/issues/4497.
+			logger := zap.NewNop()
+			mFact := metricstest.NewFactory(time.Hour)
+			defer mFact.Backend.Stop()
 			params := &HTTPServerParams{
-				HostPort:       fmt.Sprintf(":%d", ports.CollectorHTTP),
-				Handler:        handler.NewJaegerSpanHandler(logger, &mockSpanProcessor{}),
-				SamplingStore:  &mockSamplingStore{},
-				MetricsFactory: metricstest.NewFactory(time.Hour),
-				HealthCheck:    healthcheck.New(),
-				Logger:         logger,
-				TLSConfig:      test.TLS,
+				HostPort:         fmt.Sprintf(":%d", ports.CollectorHTTP),
+				Handler:          handler.NewJaegerSpanHandler(logger, &mockSpanProcessor{}),
+				SamplingProvider: &mockSamplingProvider{},
+				MetricsFactory:   mFact,
+				HealthCheck:      healthcheck.New(),
+				Logger:           logger,
+				TLSConfig:        test.TLS,
 			}
+			defer params.TLSConfig.Close()
 
 			server, err := StartHTTPServer(params)
-
-			if test.expectServerFail {
-				require.Error(t, err)
-			}
-			defer server.Close()
-
 			require.NoError(t, err)
-			clientTLSCfg, err0 := test.clientTLS.Config(zap.NewNop())
+			defer func() {
+				require.NoError(t, server.Close())
+			}()
+
+			clientTLSCfg, err0 := test.clientTLS.Config(logger)
+			defer test.clientTLS.Close()
 			require.NoError(t, err0)
 			dialer := &net.Dialer{Timeout: 2 * time.Second}
 			conn, clientError := tls.DialWithDialer(dialer, "tcp", "localhost:"+fmt.Sprintf("%d", ports.CollectorHTTP), clientTLSCfg)
@@ -238,7 +221,7 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 			}
 
 			if clientClose != nil {
-				require.Nil(t, clientClose())
+				require.NoError(t, clientClose())
 			}
 
 			client := &http.Client{
@@ -254,18 +237,22 @@ func TestSpanCollectorHTTPS(t *testing.T) {
 			} else {
 				require.NoError(t, requestError)
 				require.NotNil(t, response)
+				// ensures that the body has been initialized attempting to close
+				defer response.Body.Close()
 			}
 		})
 	}
 }
 
 func TestStartHTTPServerParams(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := zap.NewNop()
+	mFact := metricstest.NewFactory(time.Hour)
+	defer mFact.Stop()
 	params := &HTTPServerParams{
 		HostPort:          fmt.Sprintf(":%d", ports.CollectorHTTP),
 		Handler:           handler.NewJaegerSpanHandler(logger, &mockSpanProcessor{}),
-		SamplingStore:     &mockSamplingStore{},
-		MetricsFactory:    metricstest.NewFactory(time.Hour),
+		SamplingProvider:  &mockSamplingProvider{},
+		MetricsFactory:    mFact,
 		HealthCheck:       healthcheck.New(),
 		Logger:            logger,
 		IdleTimeout:       5 * time.Minute,
@@ -275,6 +262,7 @@ func TestStartHTTPServerParams(t *testing.T) {
 
 	server, err := StartHTTPServer(params)
 	require.NoError(t, err)
+	defer server.Close()
 	assert.Equal(t, 5*time.Minute, server.IdleTimeout)
 	assert.Equal(t, 6*time.Minute, server.ReadTimeout)
 	assert.Equal(t, 7*time.Second, server.ReadHeaderTimeout)

@@ -1,21 +1,11 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package storage
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,10 +13,11 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
+	"github.com/jaegertracing/jaeger/internal/safeexpvar"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
-	"github.com/jaegertracing/jaeger/pkg/multierror"
 	"github.com/jaegertracing/jaeger/plugin"
 	"github.com/jaegertracing/jaeger/plugin/storage/badger"
+	"github.com/jaegertracing/jaeger/plugin/storage/blackhole"
 	"github.com/jaegertracing/jaeger/plugin/storage/cassandra"
 	"github.com/jaegertracing/jaeger/plugin/storage/es"
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
@@ -43,8 +34,9 @@ const (
 	elasticsearchStorageType = "elasticsearch"
 	memoryStorageType        = "memory"
 	kafkaStorageType         = "kafka"
-	grpcPluginStorageType    = "grpc-plugin"
+	grpcStorageType          = "grpc"
 	badgerStorageType        = "badger"
+	blackholeStorageType     = "blackhole"
 
 	downsamplingRatio    = "downsampling.ratio"
 	downsamplingHashSalt = "downsampling.hashsalt"
@@ -64,7 +56,8 @@ var AllStorageTypes = []string{
 	memoryStorageType,
 	kafkaStorageType,
 	badgerStorageType,
-	grpcPluginStorageType,
+	blackholeStorageType,
+	grpcStorageType,
 }
 
 // AllSamplingStorageTypes returns all storage backends that implement adaptive sampling
@@ -80,9 +73,11 @@ func AllSamplingStorageTypes() []string {
 	return backends
 }
 
-var (
-	_ io.Closer           = (*Factory)(nil)
-	_ plugin.Configurable = (*Factory)(nil)
+var ( // interface comformance checks
+	_ storage.Factory        = (*Factory)(nil)
+	_ storage.ArchiveFactory = (*Factory)(nil)
+	_ io.Closer              = (*Factory)(nil)
+	_ plugin.Configurable    = (*Factory)(nil)
 )
 
 // Factory implements storage.Factory interface as a meta-factory for storage components.
@@ -118,7 +113,7 @@ func NewFactory(config FactoryConfig) (*Factory, error) {
 	return f, nil
 }
 
-func (f *Factory) getFactoryOfType(factoryType string) (storage.Factory, error) {
+func (*Factory) getFactoryOfType(factoryType string) (storage.Factory, error) {
 	switch factoryType {
 	case cassandraStorageType:
 		return cassandra.NewFactory(), nil
@@ -130,8 +125,10 @@ func (f *Factory) getFactoryOfType(factoryType string) (storage.Factory, error) 
 		return kafka.NewFactory(), nil
 	case badgerStorageType:
 		return badger.NewFactory(), nil
-	case grpcPluginStorageType:
+	case grpcStorageType:
 		return grpc.NewFactory(), nil
+	case blackholeStorageType:
+		return blackhole.NewFactory(), nil
 	default:
 		return nil, fmt.Errorf("unknown storage type %s. Valid types are %v", factoryType, AllStorageTypes)
 	}
@@ -327,13 +324,10 @@ func (f *Factory) Close() error {
 			}
 		}
 	}
-	return multierror.Wrap(errs)
+	return errors.Join(errs...)
 }
 
 func (f *Factory) publishOpts() {
-	internalFactory := f.metricsFactory.Namespace(metrics.NSOptions{Name: "internal"})
-	internalFactory.Gauge(metrics.Options{Name: downsamplingRatio}).
-		Update(int64(f.FactoryConfig.DownsamplingRatio))
-	internalFactory.Gauge(metrics.Options{Name: spanStorageType + "-" + f.SpanReaderType}).
-		Update(1)
+	safeexpvar.SetInt(downsamplingRatio, int64(f.FactoryConfig.DownsamplingRatio))
+	safeexpvar.SetInt(spanStorageType+"-"+f.FactoryConfig.SpanReaderType, 1)
 }

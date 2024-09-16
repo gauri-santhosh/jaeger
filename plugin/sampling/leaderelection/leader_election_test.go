@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package leaderelection
 
@@ -22,7 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/atomic"
+	"github.com/stretchr/testify/require"
 
 	lmocks "github.com/jaegertracing/jaeger/pkg/distributedlock/mocks"
 	"github.com/jaegertracing/jaeger/pkg/testutils"
@@ -66,7 +55,6 @@ func TestAcquireLock(t *testing.T) {
 				},
 				lock:         mockLock,
 				resourceName: "sampling_lock",
-				isLeader:     atomic.NewBool(false),
 			}
 
 			p.setLeader(test.isLeader)
@@ -77,7 +65,7 @@ func TestAcquireLock(t *testing.T) {
 	}
 }
 
-func TestRunAcquireLockLoop_followerOnly(t *testing.T) {
+func TestRunAcquireLockLoopFollowerOnly(t *testing.T) {
 	logger, logBuffer := testutils.NewLogger()
 	mockLock := &lmocks.Lock{}
 	mockLock.On("Acquire", "sampling_lock", time.Duration(5*time.Millisecond)).Return(false, errTestLock)
@@ -90,7 +78,7 @@ func TestRunAcquireLockLoop_followerOnly(t *testing.T) {
 	)
 
 	defer func() {
-		assert.NoError(t, p.Close())
+		require.NoError(t, p.Close())
 	}()
 	go p.Start()
 
@@ -105,4 +93,8 @@ func TestRunAcquireLockLoop_followerOnly(t *testing.T) {
 	match, errMsg := testutils.LogMatcher(2, expectedErrorMsg, logBuffer.Lines())
 	assert.True(t, match, errMsg)
 	assert.False(t, p.IsLeader())
+}
+
+func TestMain(m *testing.M) {
+	testutils.VerifyGoLeaks(m)
 }

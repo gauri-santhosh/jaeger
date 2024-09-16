@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package kafka
 
@@ -47,6 +36,7 @@ const (
 	suffixBatchSize        = ".batch-size"
 	suffixBatchMinMessages = ".batch-min-messages"
 	suffixBatchMaxMessages = ".batch-max-messages"
+	suffixMaxMessageBytes  = ".max-message-bytes"
 
 	defaultBroker           = "127.0.0.1:9092"
 	defaultTopic            = "jaeger-spans"
@@ -58,6 +48,7 @@ const (
 	defaultBatchSize        = 0
 	defaultBatchMinMessages = 0
 	defaultBatchMaxMessages = 0
+	defaultMaxMessageBytes  = 1000000 // https://github.com/IBM/sarama/blob/main/config.go#L177
 )
 
 var (
@@ -116,7 +107,7 @@ type Options struct {
 }
 
 // AddFlags adds flags for Options
-func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
+func (*Options) AddFlags(flagSet *flag.FlagSet) {
 	flagSet.String(
 		configPrefix+suffixRequiredAcks,
 		defaultRequiredAcks,
@@ -151,6 +142,11 @@ func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
 		configPrefix+suffixBatchMaxMessages,
 		defaultBatchMaxMessages,
 		"(experimental) Maximum number of message to batch before sending records to Kafka",
+	)
+	flagSet.Int(
+		configPrefix+suffixMaxMessageBytes,
+		defaultMaxMessageBytes,
+		"(experimental) The maximum permitted size of a message. Should be set equal to or smaller than the broker's `message.max.bytes`.",
 	)
 	flagSet.String(
 		configPrefix+suffixBrokers,
@@ -207,6 +203,7 @@ func (opt *Options) InitFromViper(v *viper.Viper) {
 		BatchSize:            v.GetInt(configPrefix + suffixBatchSize),
 		BatchMinMessages:     v.GetInt(configPrefix + suffixBatchMinMessages),
 		BatchMaxMessages:     v.GetInt(configPrefix + suffixBatchMaxMessages),
+		MaxMessageBytes:      v.GetInt(configPrefix + suffixMaxMessageBytes),
 	}
 	opt.Topic = v.GetString(configPrefix + suffixTopic)
 	opt.Encoding = v.GetString(configPrefix + suffixEncoding)
@@ -214,7 +211,7 @@ func (opt *Options) InitFromViper(v *viper.Viper) {
 
 // stripWhiteSpace removes all whitespace characters from a string
 func stripWhiteSpace(str string) string {
-	return strings.Replace(str, " ", "", -1)
+	return strings.ReplaceAll(str, " ", "")
 }
 
 // getCompressionLevel to get compression level from compression type

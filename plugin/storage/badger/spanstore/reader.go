@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -24,7 +13,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/badger/v4"
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -157,7 +146,7 @@ func (r *TraceReader) getTraces(traceIDs []model.TraceID) ([]*model.Trace, error
 }
 
 // GetTrace takes a traceID and returns a Trace associated with that traceID
-func (r *TraceReader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
+func (r *TraceReader) GetTrace(_ context.Context, traceID model.TraceID) (*model.Trace, error) {
 	traces, err := r.getTraces([]model.TraceID{traceID})
 	if err != nil {
 		return nil, err
@@ -241,13 +230,13 @@ func createPrimaryKeySeekPrefix(traceID model.TraceID) []byte {
 }
 
 // GetServices fetches the sorted service list that have not expired
-func (r *TraceReader) GetServices(ctx context.Context) ([]string, error) {
+func (r *TraceReader) GetServices(context.Context) ([]string, error) {
 	return r.cache.GetServices()
 }
 
 // GetOperations fetches operations in the service and empty slice if service does not exists
 func (r *TraceReader) GetOperations(
-	ctx context.Context,
+	_ context.Context,
 	query spanstore.OperationQueryParameters,
 ) ([]spanstore.Operation, error) {
 	return r.cache.GetOperations(query.ServiceName)
@@ -277,11 +266,9 @@ func serviceQueries(query *spanstore.TraceQueryParameters, indexSeeks [][]byte) 
 		if query.OperationName != "" {
 			indexSearchKey = append(indexSearchKey, operationNameIndexKey)
 			indexSearchKey = append(indexSearchKey, []byte(query.ServiceName+query.OperationName)...)
-		} else {
-			if !tagQueryUsed { // Tag query already reduces the search set with a serviceName
-				indexSearchKey = append(indexSearchKey, serviceNameIndexKey)
-				indexSearchKey = append(indexSearchKey, []byte(query.ServiceName)...)
-			}
+		} else if !tagQueryUsed { // Tag query already reduces the search set with a serviceName
+			indexSearchKey = append(indexSearchKey, serviceNameIndexKey)
+			indexSearchKey = append(indexSearchKey, []byte(query.ServiceName)...)
 		}
 
 		if len(indexSearchKey) > 0 {
@@ -466,7 +453,7 @@ func (r *TraceReader) FindTraces(ctx context.Context, query *spanstore.TraceQuer
 }
 
 // FindTraceIDs retrieves only the TraceIDs that match the traceQuery, but not the trace data
-func (r *TraceReader) FindTraceIDs(ctx context.Context, query *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
+func (r *TraceReader) FindTraceIDs(_ context.Context, query *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
 	// Validate and set query defaults which were not defined
 	if err := validateQuery(query); err != nil {
 		return nil, err

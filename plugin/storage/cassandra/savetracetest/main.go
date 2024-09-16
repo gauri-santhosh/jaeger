@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -23,6 +12,7 @@ import (
 
 	"github.com/jaegertracing/jaeger/model"
 	cascfg "github.com/jaegertracing/jaeger/pkg/cassandra/config"
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
 	cSpanStore "github.com/jaegertracing/jaeger/plugin/storage/cassandra/spanstore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -44,8 +34,12 @@ func main() {
 	if err != nil {
 		logger.Fatal("Cannot create Cassandra session", zap.Error(err))
 	}
+	tracer, err := jtracer.New("savetracetest")
+	if err != nil {
+		logger.Fatal("Failed to initialize tracer", zap.Error(err))
+	}
 	spanStore := cSpanStore.NewSpanWriter(cqlSession, time.Hour*12, noScope, logger)
-	spanReader := cSpanStore.NewSpanReader(cqlSession, noScope, logger)
+	spanReader := cSpanStore.NewSpanReader(cqlSession, noScope, logger, tracer.OTEL.Tracer("cSpanStore.SpanReader"))
 	ctx := context.Background()
 	if err = spanStore.WriteSpan(ctx, getSomeSpan()); err != nil {
 		logger.Fatal("Failed to save", zap.Error(err))

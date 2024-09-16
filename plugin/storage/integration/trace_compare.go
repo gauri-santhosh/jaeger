@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package integration
 
@@ -20,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/kr/pretty"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/model"
@@ -40,12 +28,26 @@ func CompareSliceOfTraces(t *testing.T, expected []*model.Trace, actual []*model
 		}
 		out, err := json.Marshal(actual)
 		out2, err2 := json.Marshal(expected)
-		assert.NoError(t, err)
-		assert.NoError(t, err2)
+		require.NoError(t, err)
+		require.NoError(t, err2)
 		t.Logf("Actual traces: %s", string(out))
 		t.Logf("Expected traces: %s", string(out2))
 		t.Fail()
 	}
+}
+
+// trace.Spans may contain spans with the same SpanID. Remove duplicates
+// and keep the first one. Use a map to keep track of the spans we've seen.
+func dedupeSpans(trace *model.Trace) {
+	seen := make(map[model.SpanID]bool)
+	var newSpans []*model.Span
+	for _, span := range trace.Spans {
+		if !seen[span.SpanID] {
+			seen[span.SpanID] = true
+			newSpans = append(newSpans, span)
+		}
+	}
+	trace.Spans = newSpans
 }
 
 // CompareTraces compares two traces
@@ -56,6 +58,14 @@ func CompareTraces(t *testing.T, expected *model.Trace, actual *model.Trace) {
 	}
 	require.NotNil(t, actual)
 	require.NotNil(t, actual.Spans)
+
+	// some storage implementation may retry writing of spans and end up with duplicates.
+	countBefore := len(actual.Spans)
+	dedupeSpans(actual)
+	if countAfter := len(actual.Spans); countAfter != countBefore {
+		t.Logf("Removed spans with duplicate span IDs; before=%d, after=%d", countBefore, countAfter)
+	}
+
 	model.SortTrace(expected)
 	model.SortTrace(actual)
 	checkSize(t, expected, actual)
@@ -65,7 +75,7 @@ func CompareTraces(t *testing.T, expected *model.Trace, actual *model.Trace) {
 			t.Logf("Expected and actual differ: %v\n", d)
 		}
 		out, err := json.Marshal(actual)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		t.Logf("Actual trace: %s", string(out))
 		t.Fail()
 	}
@@ -76,10 +86,10 @@ func checkSize(t *testing.T, expected *model.Trace, actual *model.Trace) {
 	for i := range expected.Spans {
 		expectedSpan := expected.Spans[i]
 		actualSpan := actual.Spans[i]
-		require.True(t, len(expectedSpan.Tags) == len(actualSpan.Tags))
-		require.True(t, len(expectedSpan.Logs) == len(actualSpan.Logs))
+		require.Equal(t, len(expectedSpan.Tags), len(actualSpan.Tags))
+		require.Equal(t, len(expectedSpan.Logs), len(actualSpan.Logs))
 		if expectedSpan.Process != nil && actualSpan.Process != nil {
-			require.True(t, len(expectedSpan.Process.Tags) == len(actualSpan.Process.Tags))
+			require.Equal(t, len(expectedSpan.Process.Tags), len(actualSpan.Process.Tags))
 		}
 	}
 }

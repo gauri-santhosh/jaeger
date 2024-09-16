@@ -1,35 +1,25 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package integration
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/Shopify/sarama"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/jaegertracing/jaeger/cmd/ingester/app"
 	"github.com/jaegertracing/jaeger/cmd/ingester/app/builder"
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/pkg/config"
+	"github.com/jaegertracing/jaeger/pkg/kafka/consumer"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
-	"github.com/jaegertracing/jaeger/pkg/testutils"
 	"github.com/jaegertracing/jaeger/plugin/storage/kafka"
 	"github.com/jaegertracing/jaeger/plugin/storage/memory"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -39,11 +29,10 @@ const defaultLocalKafkaBroker = "127.0.0.1:9092"
 
 type KafkaIntegrationTestSuite struct {
 	StorageIntegration
-	logger *zap.Logger
 }
 
-func (s *KafkaIntegrationTestSuite) initialize() error {
-	s.logger, _ = testutils.NewLogger()
+func (s *KafkaIntegrationTestSuite) initialize(t *testing.T) {
+	logger := zaptest.NewLogger(t, zaptest.WrapOptions(zap.AddCaller()))
 	const encoding = "json"
 	const groupID = "kafka-integration-test"
 	const clientID = "kafka-integration-test"
@@ -60,17 +49,13 @@ func (s *KafkaIntegrationTestSuite) initialize() error {
 		"--kafka.producer.encoding",
 		encoding,
 	})
-	if err != nil {
-		return err
-	}
-	f.InitFromViper(v, zap.NewNop())
-	if err := f.Initialize(metrics.NullFactory, s.logger); err != nil {
-		return err
-	}
+	require.NoError(t, err)
+	f.InitFromViper(v, logger)
+	err = f.Initialize(metrics.NullFactory, logger)
+	require.NoError(t, err)
+
 	spanWriter, err := f.CreateSpanWriter()
-	if err != nil {
-		return err
-	}
+	require.NoError(t, err)
 
 	v, command = config.Viperize(app.AddFlags)
 	err = command.ParseFlags([]string{
@@ -87,23 +72,22 @@ func (s *KafkaIntegrationTestSuite) initialize() error {
 		"--ingester.parallelism",
 		"1000",
 	})
-	if err != nil {
-		return err
+	require.NoError(t, err)
+	options := app.Options{
+		Configuration: consumer.Configuration{
+			InitialOffset: sarama.OffsetOldest,
+		},
 	}
-	options := app.Options{}
 	options.InitFromViper(v)
 	traceStore := memory.NewStore()
-	spanConsumer, err := builder.CreateConsumer(s.logger, metrics.NullFactory, traceStore, options)
-	if err != nil {
-		return err
-	}
+	spanConsumer, err := builder.CreateConsumer(logger, metrics.NullFactory, traceStore, options)
+	require.NoError(t, err)
 	spanConsumer.Start()
 
 	s.SpanWriter = spanWriter
 	s.SpanReader = &ingester{traceStore}
-	s.Refresh = func() error { return nil }
-	s.CleanUp = func() error { return nil }
-	return nil
+	s.CleanUp = func(_ *testing.T) {}
+	s.SkipArchiveTest = true
 }
 
 // The ingester consumes spans from kafka and writes them to an in-memory traceStore
@@ -115,30 +99,28 @@ func (r *ingester) GetTrace(ctx context.Context, traceID model.TraceID) (*model.
 	return r.traceStore.GetTrace(ctx, traceID)
 }
 
-func (r *ingester) GetServices(ctx context.Context) ([]string, error) {
+func (*ingester) GetServices(context.Context) ([]string, error) {
 	return nil, nil
 }
 
-func (r *ingester) GetOperations(
-	ctx context.Context,
-	query spanstore.OperationQueryParameters,
+func (*ingester) GetOperations(
+	context.Context,
+	spanstore.OperationQueryParameters,
 ) ([]spanstore.Operation, error) {
 	return nil, nil
 }
 
-func (r *ingester) FindTraces(ctx context.Context, query *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
+func (*ingester) FindTraces(context.Context, *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
 	return nil, nil
 }
 
-func (r *ingester) FindTraceIDs(ctx context.Context, query *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
+func (*ingester) FindTraceIDs(context.Context, *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
 	return nil, nil
 }
 
 func TestKafkaStorage(t *testing.T) {
-	if os.Getenv("STORAGE") != "kafka" {
-		t.Skip("Integration test against kafka skipped; set STORAGE env var to kafka to run this")
-	}
+	SkipUnlessEnv(t, "kafka")
 	s := &KafkaIntegrationTestSuite{}
-	require.NoError(t, s.initialize())
+	s.initialize(t)
 	t.Run("GetTrace", s.testGetTrace)
 }

@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package kafka
 
@@ -42,6 +31,7 @@ func TestOptionsWithFlags(t *testing.T) {
 		"--kafka.producer.batch-size=128000",
 		"--kafka.producer.batch-min-messages=50",
 		"--kafka.producer.batch-max-messages=100",
+		"--kafka.producer.max-message-bytes=10485760",
 	})
 	opts.InitFromViper(v)
 
@@ -55,6 +45,8 @@ func TestOptionsWithFlags(t *testing.T) {
 	assert.Equal(t, time.Duration(1*time.Second), opts.Config.BatchLinger)
 	assert.Equal(t, 50, opts.Config.BatchMinMessages)
 	assert.Equal(t, 100, opts.Config.BatchMaxMessages)
+	assert.Equal(t, 100, opts.Config.BatchMaxMessages)
+	assert.Equal(t, 10485760, opts.Config.MaxMessageBytes)
 }
 
 func TestFlagDefaults(t *testing.T) {
@@ -73,6 +65,7 @@ func TestFlagDefaults(t *testing.T) {
 	assert.Equal(t, time.Duration(0*time.Second), opts.Config.BatchLinger)
 	assert.Equal(t, 0, opts.Config.BatchMinMessages)
 	assert.Equal(t, 0, opts.Config.BatchMaxMessages)
+	assert.Equal(t, defaultMaxMessageBytes, opts.Config.MaxMessageBytes)
 }
 
 func TestCompressionLevelDefaults(t *testing.T) {
@@ -121,16 +114,16 @@ func TestCompressionLevel(t *testing.T) {
 
 func TestFailedCompressionLevelScenario(t *testing.T) {
 	_, err := getCompressionLevel("gzip", 14)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	_, err = getCompressionLevel("lz4", 18)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	_, err = getCompressionLevel("zstd", 25)
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	_, err = getCompressionLevel("test", 1)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCompressionModes(t *testing.T) {
@@ -149,7 +142,7 @@ func TestCompressionModes(t *testing.T) {
 
 func TestCompressionModeFailures(t *testing.T) {
 	_, err := getCompressionMode("test")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestRequiredAcks(t *testing.T) {
@@ -168,7 +161,7 @@ func TestRequiredAcks(t *testing.T) {
 
 func TestRequiredAcksFailures(t *testing.T) {
 	_, err := getRequiredAcks("test")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestTLSFlags(t *testing.T) {

@@ -1,16 +1,5 @@
 // Copyright (c) 2019 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package querysvc
 
@@ -23,7 +12,6 @@ import (
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/model/adjuster"
-	"github.com/jaegertracing/jaeger/pkg/multierror"
 	"github.com/jaegertracing/jaeger/storage"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -40,6 +28,14 @@ type QueryServiceOptions struct {
 	ArchiveSpanReader spanstore.Reader
 	ArchiveSpanWriter spanstore.Writer
 	Adjuster          adjuster.Adjuster
+}
+
+// StorageCapabilities is a feature flag for query service
+type StorageCapabilities struct {
+	ArchiveStorage bool `json:"archiveStorage"`
+	// TODO: Maybe add metrics Storage here
+	// SupportRegex     bool
+	// SupportTagFilter bool
 }
 
 // QueryService contains span utils required by the query-service.
@@ -66,7 +62,7 @@ func NewQueryService(spanReader spanstore.Reader, dependencyReader dependencysto
 // GetTrace is the queryService implementation of spanstore.Reader.GetTrace
 func (qs QueryService) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
 	trace, err := qs.spanReader.GetTrace(ctx, traceID)
-	if err == spanstore.ErrTraceNotFound {
+	if errors.Is(err, spanstore.ErrTraceNotFound) {
 		if qs.options.ArchiveSpanReader == nil {
 			return nil, err
 		}
@@ -110,7 +106,7 @@ func (qs QueryService) ArchiveTrace(ctx context.Context, traceID model.TraceID) 
 			writeErrors = append(writeErrors, err)
 		}
 	}
-	return multierror.Wrap(writeErrors)
+	return errors.Join(writeErrors...)
 }
 
 // Adjust applies adjusters to the trace.
@@ -123,6 +119,13 @@ func (qs QueryService) GetDependencies(ctx context.Context, endTs time.Time, loo
 	return qs.dependencyReader.GetDependencies(ctx, endTs, lookback)
 }
 
+// GetCapabilities returns the features supported by the query service.
+func (qs QueryService) GetCapabilities() StorageCapabilities {
+	return StorageCapabilities{
+		ArchiveStorage: qs.options.hasArchiveStorage(),
+	}
+}
+
 // InitArchiveStorage tries to initialize archive storage reader/writer if storage factory supports them.
 func (opts *QueryServiceOptions) InitArchiveStorage(storageFactory storage.Factory, logger *zap.Logger) bool {
 	archiveFactory, ok := storageFactory.(storage.ArchiveFactory)
@@ -131,7 +134,7 @@ func (opts *QueryServiceOptions) InitArchiveStorage(storageFactory storage.Facto
 		return false
 	}
 	reader, err := archiveFactory.CreateArchiveSpanReader()
-	if err == storage.ErrArchiveStorageNotConfigured || err == storage.ErrArchiveStorageNotSupported {
+	if errors.Is(err, storage.ErrArchiveStorageNotConfigured) || errors.Is(err, storage.ErrArchiveStorageNotSupported) {
 		logger.Info("Archive storage not created", zap.String("reason", err.Error()))
 		return false
 	}
@@ -140,7 +143,7 @@ func (opts *QueryServiceOptions) InitArchiveStorage(storageFactory storage.Facto
 		return false
 	}
 	writer, err := archiveFactory.CreateArchiveSpanWriter()
-	if err == storage.ErrArchiveStorageNotConfigured || err == storage.ErrArchiveStorageNotSupported {
+	if errors.Is(err, storage.ErrArchiveStorageNotConfigured) || errors.Is(err, storage.ErrArchiveStorageNotSupported) {
 		logger.Info("Archive storage not created", zap.String("reason", err.Error()))
 		return false
 	}
@@ -151,4 +154,9 @@ func (opts *QueryServiceOptions) InitArchiveStorage(storageFactory storage.Facto
 	opts.ArchiveSpanReader = reader
 	opts.ArchiveSpanWriter = writer
 	return true
+}
+
+// hasArchiveStorage returns true if archive storage reader/writer are initialized.
+func (opts *QueryServiceOptions) hasArchiveStorage() bool {
+	return opts.ArchiveSpanReader != nil && opts.ArchiveSpanWriter != nil
 }

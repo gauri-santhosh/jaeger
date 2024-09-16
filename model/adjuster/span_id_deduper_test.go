@@ -1,25 +1,15 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package adjuster
 
 import (
 	"testing"
 
-	"github.com/opentracing/opentracing-go/ext"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jaegertracing/jaeger/model"
 )
@@ -27,6 +17,7 @@ import (
 var (
 	clientSpanID  = model.NewSpanID(1)
 	anotherSpanID = model.NewSpanID(11)
+	keySpanKind   = "span.kind"
 )
 
 func newTrace() *model.Trace {
@@ -39,7 +30,7 @@ func newTrace() *model.Trace {
 				SpanID:  clientSpanID,
 				Tags: model.KeyValues{
 					// span.kind = client
-					model.String(string(ext.SpanKind), string(ext.SpanKindRPCClientEnum)),
+					model.String(keySpanKind, trace.SpanKindClient.String()),
 				},
 			},
 			{
@@ -48,7 +39,7 @@ func newTrace() *model.Trace {
 				SpanID:  clientSpanID, // shared span ID
 				Tags: model.KeyValues{
 					// span.kind = server
-					model.String(string(ext.SpanKind), string(ext.SpanKindRPCServerEnum)),
+					model.String(keySpanKind, trace.SpanKindServer.String()),
 				},
 			},
 			{
@@ -65,7 +56,7 @@ func TestSpanIDDeduperTriggered(t *testing.T) {
 	trace := newTrace()
 	deduper := SpanIDDeduper()
 	trace, err := deduper.Adjust(trace)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	clientSpan := trace.Spans[0]
 	assert.Equal(t, clientSpanID, clientSpan.SpanID, "client span ID should not change")
@@ -85,7 +76,7 @@ func TestSpanIDDeduperNotTriggered(t *testing.T) {
 
 	deduper := SpanIDDeduper()
 	trace, err := deduper.Adjust(trace)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	serverSpanID := clientSpanID // for better readability
 	serverSpan := trace.Spans[0]
@@ -107,6 +98,6 @@ func TestSpanIDDeduperError(t *testing.T) {
 	deduper.maxUsedID = maxSpanID - 1
 	deduper.dedupeSpanIDs()
 	if assert.Len(t, trace.Spans[1].Warnings, 1) {
-		assert.Equal(t, trace.Spans[1].Warnings[0], "cannot assign unique span ID, too many spans in the trace")
+		assert.Equal(t, "cannot assign unique span ID, too many spans in the trace", trace.Spans[1].Warnings[0])
 	}
 }

@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2017 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package spanstore
 
@@ -29,10 +18,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/internal/metricstest"
 	"github.com/jaegertracing/jaeger/model"
+	"github.com/jaegertracing/jaeger/pkg/es"
 	"github.com/jaegertracing/jaeger/pkg/es/mocks"
 	"github.com/jaegertracing/jaeger/pkg/testutils"
 	"github.com/jaegertracing/jaeger/plugin/storage/es/spanstore/dbmodel"
@@ -83,22 +76,39 @@ var exampleESSpan = []byte(
 	}`)
 
 type spanReaderTest struct {
-	client    *mocks.Client
-	logger    *zap.Logger
-	logBuffer *testutils.Buffer
-	reader    *SpanReader
+	client      *mocks.Client
+	logger      *zap.Logger
+	logBuffer   *testutils.Buffer
+	traceBuffer *tracetest.InMemoryExporter
+	reader      *SpanReader
 }
 
-func withSpanReader(fn func(r *spanReaderTest)) {
+func tracerProvider(t *testing.T) (trace.TracerProvider, *tracetest.InMemoryExporter, func()) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSyncer(exporter),
+	)
+	closer := func() {
+		require.NoError(t, tp.Shutdown(context.Background()))
+	}
+	return tp, exporter, closer
+}
+
+func withSpanReader(t *testing.T, fn func(r *spanReaderTest)) {
 	client := &mocks.Client{}
+	tracer, exp, closer := tracerProvider(t)
+	defer closer()
 	logger, logBuffer := testutils.NewLogger()
 	r := &spanReaderTest{
-		client:    client,
-		logger:    logger,
-		logBuffer: logBuffer,
+		client:      client,
+		logger:      logger,
+		logBuffer:   logBuffer,
+		traceBuffer: exp,
 		reader: NewSpanReader(SpanReaderParams{
-			Client:            client,
+			Client:            func() es.Client { return client },
 			Logger:            zap.NewNop(),
+			Tracer:            tracer.Tracer("test"),
 			MaxSpanAge:        0,
 			IndexPrefix:       "",
 			TagDotReplacement: "@",
@@ -108,16 +118,20 @@ func withSpanReader(fn func(r *spanReaderTest)) {
 	fn(r)
 }
 
-func withArchiveSpanReader(readAlias bool, fn func(r *spanReaderTest)) {
+func withArchiveSpanReader(t *testing.T, readAlias bool, fn func(r *spanReaderTest)) {
 	client := &mocks.Client{}
+	tracer, exp, closer := tracerProvider(t)
+	defer closer()
 	logger, logBuffer := testutils.NewLogger()
 	r := &spanReaderTest{
-		client:    client,
-		logger:    logger,
-		logBuffer: logBuffer,
+		client:      client,
+		logger:      logger,
+		logBuffer:   logBuffer,
+		traceBuffer: exp,
 		reader: NewSpanReader(SpanReaderParams{
-			Client:              client,
+			Client:              func() es.Client { return client },
 			Logger:              zap.NewNop(),
+			Tracer:              tracer.Tracer("test"),
 			MaxSpanAge:          0,
 			IndexPrefix:         "",
 			TagDotReplacement:   "@",
@@ -163,13 +177,16 @@ func TestNewSpanReader(t *testing.T) {
 
 func TestSpanReaderIndices(t *testing.T) {
 	client := &mocks.Client{}
-	logger, _ := testutils.NewLogger()
-	metricsFactory := metricstest.NewFactory(0)
+	clientFn := func() es.Client { return client }
 	date := time.Date(2019, 10, 10, 5, 0, 0, 0, time.UTC)
 	spanDataLayout := "2006-01-02-15"
 	serviceDataLayout := "2006-01-02"
 	spanDataLayoutFormat := date.UTC().Format(spanDataLayout)
 	serviceDataLayoutFormat := date.UTC().Format(serviceDataLayout)
+	metricsFactory := metricstest.NewFactory(0)
+	logger, _ := testutils.NewLogger()
+	tracer, _, closer := tracerProvider(t)
+	defer closer()
 
 	testCases := []struct {
 		indices []string
@@ -177,56 +194,48 @@ func TestSpanReaderIndices(t *testing.T) {
 	}{
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", Archive: false, SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout,
 			},
 			indices: []string{spanIndex + spanDataLayoutFormat, serviceIndex + serviceDataLayoutFormat},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", UseReadWriteAliases: true,
 			},
 			indices: []string{spanIndex + "read", serviceIndex + "read"},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", Archive: false, SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout,
 			},
 			indices: []string{"foo:" + indexPrefixSeparator + spanIndex + spanDataLayoutFormat, "foo:" + indexPrefixSeparator + serviceIndex + serviceDataLayoutFormat},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", UseReadWriteAliases: true,
 			},
 			indices: []string{"foo:-" + spanIndex + "read", "foo:-" + serviceIndex + "read"},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", Archive: true,
 			},
 			indices: []string{spanIndex + archiveIndexSuffix, serviceIndex + archiveIndexSuffix},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", Archive: true,
 			},
 			indices: []string{"foo:" + indexPrefixSeparator + spanIndex + archiveIndexSuffix, "foo:" + indexPrefixSeparator + serviceIndex + archiveIndexSuffix},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "foo:", Archive: true, UseReadWriteAliases: true,
 			},
 			indices: []string{"foo:" + indexPrefixSeparator + spanIndex + archiveReadIndexSuffix, "foo:" + indexPrefixSeparator + serviceIndex + archiveReadIndexSuffix},
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", Archive: false, RemoteReadClusters: []string{"cluster_one", "cluster_two"}, SpanIndexDateLayout: spanDataLayout, ServiceIndexDateLayout: serviceDataLayout,
 			},
 			indices: []string{
@@ -240,7 +249,6 @@ func TestSpanReaderIndices(t *testing.T) {
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", Archive: true, RemoteReadClusters: []string{"cluster_one", "cluster_two"},
 			},
 			indices: []string{
@@ -254,7 +262,6 @@ func TestSpanReaderIndices(t *testing.T) {
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", Archive: false, UseReadWriteAliases: true, RemoteReadClusters: []string{"cluster_one", "cluster_two"},
 			},
 			indices: []string{
@@ -268,7 +275,6 @@ func TestSpanReaderIndices(t *testing.T) {
 		},
 		{
 			params: SpanReaderParams{
-				Client: client, Logger: logger, MetricsFactory: metricsFactory,
 				IndexPrefix: "", Archive: true, UseReadWriteAliases: true, RemoteReadClusters: []string{"cluster_one", "cluster_two"},
 			},
 			indices: []string{
@@ -282,6 +288,10 @@ func TestSpanReaderIndices(t *testing.T) {
 		},
 	}
 	for _, testCase := range testCases {
+		testCase.params.Client = clientFn
+		testCase.params.Logger = logger
+		testCase.params.MetricsFactory = metricsFactory
+		testCase.params.Tracer = tracer.Tracer("test")
 		r := NewSpanReader(testCase.params)
 
 		actualSpan := r.timeRangeIndices(r.spanIndexPrefix, r.spanIndexDateLayout, date, date, -1*time.Hour)
@@ -291,7 +301,7 @@ func TestSpanReaderIndices(t *testing.T) {
 }
 
 func TestSpanReader_GetTrace(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		hits := make([]*elastic.SearchHit, 1)
 		hits[0] = &elastic.SearchHit{
 			Source: (*json.RawMessage)(&exampleESSpan),
@@ -307,6 +317,7 @@ func TestSpanReader_GetTrace(t *testing.T) {
 			}, nil)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.NewTraceID(0, 1))
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.NoError(t, err)
 		require.NotNil(t, trace)
 
@@ -319,7 +330,7 @@ func TestSpanReader_GetTrace(t *testing.T) {
 }
 
 func TestSpanReader_multiRead_followUp_query(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		date := time.Date(2019, 10, 10, 5, 0, 0, 0, time.UTC)
 		spanID1 := dbmodel.Span{SpanID: "0", TraceID: "1", StartTime: model.TimeAsEpochMicroseconds(date)}
 		spanBytesID1, err := json.Marshal(spanID1)
@@ -356,8 +367,8 @@ func TestSpanReader_multiRead_followUp_query(t *testing.T) {
 		secondMultiSearch.On("Index", mock.AnythingOfType("string")).Return(secondMultiSearch)
 		r.client.On("MultiSearch").Return(multiSearchService)
 
-		fistMultiSearchMock := firstMultiSearch.On("Do", mock.AnythingOfType("*context.emptyCtx"))
-		secondMultiSearchMock := secondMultiSearch.On("Do", mock.AnythingOfType("*context.emptyCtx"))
+		fistMultiSearchMock := firstMultiSearch.On("Do", mock.Anything)
+		secondMultiSearchMock := secondMultiSearch.On("Do", mock.Anything)
 
 		// set TotalHits to two to trigger the follow up query
 		// the client will return only one span therefore the implementation
@@ -383,6 +394,7 @@ func TestSpanReader_multiRead_followUp_query(t *testing.T) {
 			}, nil)
 
 		traces, err := r.reader.multiRead(context.Background(), []model.TraceID{{High: 0, Low: 1}, {High: 0, Low: 2}}, date, date)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.NoError(t, err)
 		require.NotNil(t, traces)
 		require.Len(t, traces, 2)
@@ -401,7 +413,7 @@ func TestSpanReader_multiRead_followUp_query(t *testing.T) {
 }
 
 func TestSpanReader_SearchAfter(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		var hits []*elastic.SearchHit
 
 		for i := 0; i < 10000; i++ {
@@ -420,6 +432,7 @@ func TestSpanReader_SearchAfter(t *testing.T) {
 			}, nil).Times(2)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.NewTraceID(0, 1))
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.NoError(t, err)
 		require.NotNil(t, trace)
 
@@ -431,7 +444,7 @@ func TestSpanReader_SearchAfter(t *testing.T) {
 }
 
 func TestSpanReader_GetTraceQueryError(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(nil, errors.New("query error occurred"))
 		mockMultiSearchService(r).
@@ -439,13 +452,14 @@ func TestSpanReader_GetTraceQueryError(t *testing.T) {
 				Responses: []*elastic.SearchResult{},
 			}, nil)
 		trace, err := r.reader.GetTrace(context.Background(), model.NewTraceID(0, 1))
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.EqualError(t, err, "trace not found")
 		require.Nil(t, trace)
 	})
 }
 
 func TestSpanReader_GetTraceNilHits(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		var hits []*elastic.SearchHit
 		searchHits := &elastic.SearchHits{Hits: hits}
 
@@ -458,13 +472,14 @@ func TestSpanReader_GetTraceNilHits(t *testing.T) {
 			}, nil)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.NewTraceID(0, 1))
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.EqualError(t, err, "trace not found")
 		require.Nil(t, trace)
 	})
 }
 
 func TestSpanReader_GetTraceInvalidSpanError(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		data := []byte(`{"TraceID": "123"asdf fadsg}`)
 		hits := make([]*elastic.SearchHit, 1)
 		hits[0] = &elastic.SearchHit{
@@ -481,13 +496,14 @@ func TestSpanReader_GetTraceInvalidSpanError(t *testing.T) {
 			}, nil)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.NewTraceID(0, 1))
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Error(t, err, "invalid span")
 		require.Nil(t, trace)
 	})
 }
 
 func TestSpanReader_GetTraceSpanConversionError(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		badSpan := []byte(`{"TraceID": "123"}`)
 
 		hits := make([]*elastic.SearchHit, 1)
@@ -505,13 +521,14 @@ func TestSpanReader_GetTraceSpanConversionError(t *testing.T) {
 			}, nil)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.NewTraceID(0, 1))
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Error(t, err, "span conversion error, because lacks elements")
 		require.Nil(t, trace)
 	})
 }
 
 func TestSpanReader_esJSONtoJSONSpanModel(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		jsonPayload := (*json.RawMessage)(&exampleESSpan)
 
 		esSpanRaw := &elastic.SearchHit{
@@ -528,7 +545,7 @@ func TestSpanReader_esJSONtoJSONSpanModel(t *testing.T) {
 }
 
 func TestSpanReader_esJSONtoJSONSpanModelError(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		data := []byte(`{"TraceID": "123"asdf fadsg}`)
 		jsonPayload := (*json.RawMessage)(&data)
 
@@ -578,7 +595,7 @@ func TestSpanReaderFindIndices(t *testing.T) {
 			},
 		},
 	}
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		for _, testCase := range testCases {
 			actual := r.reader.timeRangeIndices(spanIndex, dateLayout, testCase.startTime, testCase.endTime, -24*time.Hour)
 			assert.EqualValues(t, testCase.expected, actual)
@@ -587,7 +604,7 @@ func TestSpanReaderFindIndices(t *testing.T) {
 }
 
 func TestSpanReader_indexWithDate(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(_ *spanReaderTest) {
 		actual := indexWithDate(spanIndex, "2006-01-02", time.Date(1995, time.April, 21, 4, 21, 19, 95, time.UTC))
 		assert.Equal(t, "jaeger-span-1995-04-21", actual)
 	})
@@ -607,12 +624,12 @@ func testGet(typ string, t *testing.T) {
 		searchResult   *elastic.SearchResult
 		searchError    error
 		expectedError  func() string
-		expectedOutput map[string]interface{}
+		expectedOutput map[string]any
 	}{
 		{
 			caption:      typ + " full behavior",
 			searchResult: &elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations)},
-			expectedOutput: map[string]interface{}{
+			expectedOutput: map[string]any{
 				operationsAggregation: []spanstore.Operation{{Name: "123"}},
 				"default":             []string{"123"},
 			},
@@ -642,7 +659,7 @@ func testGet(typ string, t *testing.T) {
 	for _, tc := range testCases {
 		testCase := tc
 		t.Run(testCase.caption, func(t *testing.T) {
-			withSpanReader(func(r *spanReaderTest) {
+			withSpanReader(t, func(r *spanReaderTest) {
 				mockSearchService(r).Return(testCase.searchResult, testCase.searchError)
 				actual, err := returnSearchFunc(typ, r)
 				if testCase.expectedError() != "" {
@@ -658,22 +675,23 @@ func testGet(typ string, t *testing.T) {
 	}
 }
 
-func returnSearchFunc(typ string, r *spanReaderTest) (interface{}, error) {
-	if typ == servicesAggregation {
+func returnSearchFunc(typ string, r *spanReaderTest) (any, error) {
+	switch typ {
+	case servicesAggregation:
 		return r.reader.GetServices(context.Background())
-	} else if typ == operationsAggregation {
+	case operationsAggregation:
 		return r.reader.GetOperations(
 			context.Background(),
 			spanstore.OperationQueryParameters{ServiceName: "someService"},
 		)
-	} else if typ == traceIDAggregation {
+	case traceIDAggregation:
 		return r.reader.findTraceIDs(context.Background(), &spanstore.TraceQueryParameters{})
 	}
 	return nil, errors.New("Specify services, operations, traceIDs only")
 }
 
 func TestSpanReader_bucketToStringArray(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(_ *spanReaderTest) {
 		buckets := make([]*elastic.AggregationBucketKeyItem, 3)
 		buckets[0] = &elastic.AggregationBucketKeyItem{Key: "hello"}
 		buckets[1] = &elastic.AggregationBucketKeyItem{Key: "world"}
@@ -687,14 +705,14 @@ func TestSpanReader_bucketToStringArray(t *testing.T) {
 }
 
 func TestSpanReader_bucketToStringArrayError(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(_ *spanReaderTest) {
 		buckets := make([]*elastic.AggregationBucketKeyItem, 3)
 		buckets[0] = &elastic.AggregationBucketKeyItem{Key: "hello"}
 		buckets[1] = &elastic.AggregationBucketKeyItem{Key: "world"}
 		buckets[2] = &elastic.AggregationBucketKeyItem{Key: 2}
 
 		_, err := bucketToStringArray(buckets)
-		assert.EqualError(t, err, "non-string key found in aggregation")
+		require.EqualError(t, err, "non-string key found in aggregation")
 	})
 }
 
@@ -709,7 +727,7 @@ func TestSpanReader_FindTraces(t *testing.T) {
 	}
 	searchHits := &elastic.SearchHits{Hits: hits}
 
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		// find trace IDs
 		mockSearchService(r).
 			Return(&elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations), Hits: searchHits}, nil)
@@ -733,6 +751,7 @@ func TestSpanReader_FindTraces(t *testing.T) {
 		}
 
 		traces, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.NoError(t, err)
 		assert.Len(t, traces, 1)
 
@@ -756,7 +775,7 @@ func TestSpanReader_FindTracesInvalidQuery(t *testing.T) {
 	}
 	searchHits := &elastic.SearchHits{Hits: hits}
 
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations), Hits: searchHits}, nil)
 		mockMultiSearchService(r).
@@ -777,6 +796,7 @@ func TestSpanReader_FindTracesInvalidQuery(t *testing.T) {
 		}
 
 		traces, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Error(t, err)
 		assert.Nil(t, traces)
 	})
@@ -791,7 +811,7 @@ func TestSpanReader_FindTracesAggregationFailure(t *testing.T) {
 	}
 	searchHits := &elastic.SearchHits{Hits: hits}
 
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations), Hits: searchHits}, nil)
 		mockMultiSearchService(r).
@@ -809,6 +829,7 @@ func TestSpanReader_FindTracesAggregationFailure(t *testing.T) {
 		}
 
 		traces, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Error(t, err)
 		assert.Nil(t, traces)
 	})
@@ -825,7 +846,7 @@ func TestSpanReader_FindTracesNoTraceIDs(t *testing.T) {
 	}
 	searchHits := &elastic.SearchHits{Hits: hits}
 
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations), Hits: searchHits}, nil)
 		mockMultiSearchService(r).
@@ -843,8 +864,9 @@ func TestSpanReader_FindTracesNoTraceIDs(t *testing.T) {
 		}
 
 		traces, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.NoError(t, err)
-		assert.Len(t, traces, 0)
+		assert.Empty(t, traces)
 	})
 }
 
@@ -860,7 +882,7 @@ func TestSpanReader_FindTracesReadTraceFailure(t *testing.T) {
 	}
 	searchHits := &elastic.SearchHits{Hits: hits}
 
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations), Hits: searchHits}, nil)
 		mockMultiSearchService(r).
@@ -876,8 +898,9 @@ func TestSpanReader_FindTracesReadTraceFailure(t *testing.T) {
 		}
 
 		traces, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.EqualError(t, err, "read error")
-		assert.Len(t, traces, 0)
+		assert.Empty(t, traces)
 	})
 }
 
@@ -893,7 +916,7 @@ func TestSpanReader_FindTracesSpanCollectionFailure(t *testing.T) {
 	}
 	searchHits := &elastic.SearchHits{Hits: hits}
 
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{Aggregations: elastic.Aggregations(goodAggregations), Hits: searchHits}, nil)
 		mockMultiSearchService(r).
@@ -914,8 +937,9 @@ func TestSpanReader_FindTracesSpanCollectionFailure(t *testing.T) {
 		}
 
 		traces, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Error(t, err)
-		assert.Len(t, traces, 0)
+		assert.Empty(t, traces)
 	})
 }
 
@@ -936,13 +960,13 @@ func TestFindTraceIDs(t *testing.T) {
 
 func TestTraceIDsStringsToModelsConversion(t *testing.T) {
 	traceIDs, err := convertTraceIDsStringsToModels([]string{"1", "2", "3"})
-	assert.NoError(t, err)
-	assert.Equal(t, 3, len(traceIDs))
+	require.NoError(t, err)
+	assert.Len(t, traceIDs, 3)
 	assert.Equal(t, model.NewTraceID(0, 1), traceIDs[0])
 
 	traceIDs, err = convertTraceIDsStringsToModels([]string{"dsfjsdklfjdsofdfsdbfkgbgoaemlrksdfbsdofgerjl"})
-	assert.EqualError(t, err, "making traceID from string 'dsfjsdklfjdsofdfsdbfkgbgoaemlrksdfbsdofgerjl' failed: TraceID cannot be longer than 32 hex characters: dsfjsdklfjdsofdfsdbfkgbgoaemlrksdfbsdofgerjl")
-	assert.Equal(t, 0, len(traceIDs))
+	require.EqualError(t, err, "making traceID from string 'dsfjsdklfjdsofdfsdbfkgbgoaemlrksdfbsdofgerjl' failed: TraceID cannot be longer than 32 hex characters: dsfjsdklfjdsofdfsdbfkgbgoaemlrksdfbsdofgerjl")
+	assert.Empty(t, traceIDs)
 }
 
 func mockMultiSearchService(r *spanReaderTest) *mock.Call {
@@ -951,7 +975,7 @@ func mockMultiSearchService(r *spanReaderTest) *mock.Call {
 	multiSearchService.On("Index", mock.AnythingOfType("string"), mock.AnythingOfType("string"),
 		mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.AnythingOfType("string")).Return(multiSearchService)
 	r.client.On("MultiSearch").Return(multiSearchService)
-	return multiSearchService.On("Do", mock.AnythingOfType("*context.valueCtx"))
+	return multiSearchService.On("Do", mock.Anything)
 }
 
 func mockArchiveMultiSearchService(r *spanReaderTest, indexName string) *mock.Call {
@@ -959,7 +983,7 @@ func mockArchiveMultiSearchService(r *spanReaderTest, indexName string) *mock.Ca
 	multiSearchService.On("Add", mock.Anything, mock.Anything, mock.Anything).Return(multiSearchService)
 	multiSearchService.On("Index", indexName).Return(multiSearchService)
 	r.client.On("MultiSearch").Return(multiSearchService)
-	return multiSearchService.On("Do", mock.AnythingOfType("*context.valueCtx"))
+	return multiSearchService.On("Do", mock.Anything)
 }
 
 // matchTermsAggregation uses reflection to match the size attribute of the TermsAggregation; neither
@@ -981,16 +1005,13 @@ func mockSearchService(r *spanReaderTest) *mock.Call {
 	searchService.On("Aggregation", stringMatcher(operationsAggregation), mock.MatchedBy(matchTermsAggregation)).Return(searchService)
 	searchService.On("Aggregation", stringMatcher(traceIDAggregation), mock.AnythingOfType("*elastic.TermsAggregation")).Return(searchService)
 	r.client.On("Search", mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.AnythingOfType("string"), mock.AnythingOfType("string")).Return(searchService)
-	return searchService.On("Do", mock.MatchedBy(func(ctx context.Context) bool {
-		t := reflect.TypeOf(ctx).String()
-		return t == "*context.valueCtx" || t == "*context.emptyCtx"
-	}))
+	return searchService.On("Do", mock.Anything)
 }
 
 func TestTraceQueryParameterValidation(t *testing.T) {
 	var malformedtqp *spanstore.TraceQueryParameters
 	err := validateQuery(malformedtqp)
-	assert.EqualError(t, err, ErrMalformedRequestObject.Error())
+	require.EqualError(t, err, ErrMalformedRequestObject.Error())
 
 	tqp := &spanstore.TraceQueryParameters{
 		ServiceName: "",
@@ -999,29 +1020,29 @@ func TestTraceQueryParameterValidation(t *testing.T) {
 		},
 	}
 	err = validateQuery(tqp)
-	assert.EqualError(t, err, ErrServiceNameNotSet.Error())
+	require.EqualError(t, err, ErrServiceNameNotSet.Error())
 
 	tqp.ServiceName = serviceName
 
 	tqp.StartTimeMin = time.Time{} // time.Unix(0,0) doesn't work because timezones
 	tqp.StartTimeMax = time.Time{}
 	err = validateQuery(tqp)
-	assert.EqualError(t, err, ErrStartAndEndTimeNotSet.Error())
+	require.EqualError(t, err, ErrStartAndEndTimeNotSet.Error())
 
 	tqp.StartTimeMin = time.Now()
 	tqp.StartTimeMax = time.Now().Add(-1 * time.Hour)
 	err = validateQuery(tqp)
-	assert.EqualError(t, err, ErrStartTimeMinGreaterThanMax.Error())
+	require.EqualError(t, err, ErrStartTimeMinGreaterThanMax.Error())
 
 	tqp.StartTimeMin = time.Now().Add(-1 * time.Hour)
 	tqp.StartTimeMax = time.Now()
 	err = validateQuery(tqp)
-	assert.Nil(t, err)
+	require.NoError(t, err)
 
 	tqp.DurationMin = time.Hour
 	tqp.DurationMax = time.Minute
 	err = validateQuery(tqp)
-	assert.EqualError(t, err, ErrDurationMinGreaterThanMax.Error())
+	require.EqualError(t, err, ErrDurationMinGreaterThanMax.Error())
 }
 
 func TestSpanReader_buildTraceIDAggregation(t *testing.T) {
@@ -1035,21 +1056,21 @@ func TestSpanReader_buildTraceIDAggregation(t *testing.T) {
          "aggregations": {
             "startTime" : { "max": {"field": "startTime"}}
          }}`
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		traceIDAggregation := r.reader.buildTraceIDAggregation(123)
 		actual, err := traceIDAggregation.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal([]byte(expectedStr), &expected)
-		expected["terms"].(map[string]interface{})["size"] = 123
-		expected["terms"].(map[string]interface{})["order"] = []interface{}{map[string]string{"startTime": "desc"}}
+		expected["terms"].(map[string]any)["size"] = 123
+		expected["terms"].(map[string]any)["order"] = []any{map[string]string{"startTime": "desc"}}
 		assert.EqualValues(t, expected, actual)
 	})
 }
 
 func TestSpanReader_buildFindTraceIDsQuery(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		traceQuery := &spanstore.TraceQueryParameters{
 			DurationMin:   time.Second,
 			DurationMax:   time.Second * 2,
@@ -1087,18 +1108,18 @@ func TestSpanReader_buildDurationQuery(t *testing.T) {
 				        "to": 2000000 }
 			}
 		}`
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		durationMin := time.Second
 		durationMax := time.Second * 2
 		durationQuery := r.reader.buildDurationQuery(durationMin, durationMax)
 		actual, err := durationQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal([]byte(expectedStr), &expected)
 		// We need to do this because we cannot process a json into uint64.
-		expected["range"].(map[string]interface{})["duration"].(map[string]interface{})["from"] = model.DurationAsMicroseconds(durationMin)
-		expected["range"].(map[string]interface{})["duration"].(map[string]interface{})["to"] = model.DurationAsMicroseconds(durationMax)
+		expected["range"].(map[string]any)["duration"].(map[string]any)["from"] = model.DurationAsMicroseconds(durationMin)
+		expected["range"].(map[string]any)["duration"].(map[string]any)["to"] = model.DurationAsMicroseconds(durationMax)
 
 		assert.EqualValues(t, expected, actual)
 	})
@@ -1112,18 +1133,18 @@ func TestSpanReader_buildStartTimeQuery(t *testing.T) {
 				         "to": 2000000 }
 			}
 		}`
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		startTimeMin := time.Time{}.Add(time.Second)
 		startTimeMax := time.Time{}.Add(2 * time.Second)
 		durationQuery := r.reader.buildStartTimeQuery(startTimeMin, startTimeMax)
 		actual, err := durationQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal([]byte(expectedStr), &expected)
 		// We need to do this because we cannot process a json into uint64.
-		expected["range"].(map[string]interface{})["startTimeMillis"].(map[string]interface{})["from"] = model.TimeAsEpochMicroseconds(startTimeMin) / 1000
-		expected["range"].(map[string]interface{})["startTimeMillis"].(map[string]interface{})["to"] = model.TimeAsEpochMicroseconds(startTimeMax) / 1000
+		expected["range"].(map[string]any)["startTimeMillis"].(map[string]any)["from"] = model.TimeAsEpochMicroseconds(startTimeMin) / 1000
+		expected["range"].(map[string]any)["startTimeMillis"].(map[string]any)["to"] = model.TimeAsEpochMicroseconds(startTimeMax) / 1000
 
 		assert.EqualValues(t, expected, actual)
 	})
@@ -1131,12 +1152,12 @@ func TestSpanReader_buildStartTimeQuery(t *testing.T) {
 
 func TestSpanReader_buildServiceNameQuery(t *testing.T) {
 	expectedStr := `{ "match": { "process.serviceName": { "query": "bat" }}}`
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		serviceNameQuery := r.reader.buildServiceNameQuery("bat")
 		actual, err := serviceNameQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal([]byte(expectedStr), &expected)
 
 		assert.EqualValues(t, expected, actual)
@@ -1145,12 +1166,12 @@ func TestSpanReader_buildServiceNameQuery(t *testing.T) {
 
 func TestSpanReader_buildOperationNameQuery(t *testing.T) {
 	expectedStr := `{ "match": { "operationName": { "query": "spook" }}}`
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		operationNameQuery := r.reader.buildOperationNameQuery("spook")
 		actual, err := operationNameQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal([]byte(expectedStr), &expected)
 
 		assert.EqualValues(t, expected, actual)
@@ -1160,12 +1181,12 @@ func TestSpanReader_buildOperationNameQuery(t *testing.T) {
 func TestSpanReader_buildTagQuery(t *testing.T) {
 	inStr, err := os.ReadFile("fixtures/query_01.json")
 	require.NoError(t, err)
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		tagQuery := r.reader.buildTagQuery("bat.foo", "spook")
 		actual, err := tagQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal(inStr, &expected)
 
 		assert.EqualValues(t, expected, actual)
@@ -1175,12 +1196,12 @@ func TestSpanReader_buildTagQuery(t *testing.T) {
 func TestSpanReader_buildTagRegexQuery(t *testing.T) {
 	inStr, err := os.ReadFile("fixtures/query_02.json")
 	require.NoError(t, err)
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		tagQuery := r.reader.buildTagQuery("bat.foo", "spo.*")
 		actual, err := tagQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal(inStr, &expected)
 
 		assert.EqualValues(t, expected, actual)
@@ -1190,12 +1211,12 @@ func TestSpanReader_buildTagRegexQuery(t *testing.T) {
 func TestSpanReader_buildTagRegexEscapedQuery(t *testing.T) {
 	inStr, err := os.ReadFile("fixtures/query_03.json")
 	require.NoError(t, err)
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		tagQuery := r.reader.buildTagQuery("bat.foo", "spo\\*")
 		actual, err := tagQuery.Source()
 		require.NoError(t, err)
 
-		expected := make(map[string]interface{})
+		expected := make(map[string]any)
 		json.Unmarshal(inStr, &expected)
 
 		assert.EqualValues(t, expected, actual)
@@ -1203,7 +1224,7 @@ func TestSpanReader_buildTagRegexEscapedQuery(t *testing.T) {
 }
 
 func TestSpanReader_GetEmptyIndex(t *testing.T) {
-	withSpanReader(func(r *spanReaderTest) {
+	withSpanReader(t, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{}, nil)
 		mockMultiSearchService(r).
@@ -1222,13 +1243,14 @@ func TestSpanReader_GetEmptyIndex(t *testing.T) {
 		}
 
 		services, err := r.reader.FindTraces(context.Background(), traceQuery)
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.NoError(t, err)
 		assert.Empty(t, services)
 	})
 }
 
 func TestSpanReader_ArchiveTraces(t *testing.T) {
-	withArchiveSpanReader(false, func(r *spanReaderTest) {
+	withArchiveSpanReader(t, false, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{}, nil)
 		mockArchiveMultiSearchService(r, "jaeger-span-archive").
@@ -1237,13 +1259,14 @@ func TestSpanReader_ArchiveTraces(t *testing.T) {
 			}, nil)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.TraceID{})
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Nil(t, trace)
-		assert.EqualError(t, err, "trace not found")
+		require.EqualError(t, err, "trace not found")
 	})
 }
 
 func TestSpanReader_ArchiveTraces_ReadAlias(t *testing.T) {
-	withArchiveSpanReader(true, func(r *spanReaderTest) {
+	withArchiveSpanReader(t, true, func(r *spanReaderTest) {
 		mockSearchService(r).
 			Return(&elastic.SearchResult{}, nil)
 		mockArchiveMultiSearchService(r, "jaeger-span-archive-read").
@@ -1252,8 +1275,9 @@ func TestSpanReader_ArchiveTraces_ReadAlias(t *testing.T) {
 			}, nil)
 
 		trace, err := r.reader.GetTrace(context.Background(), model.TraceID{})
+		require.NotEmpty(t, r.traceBuffer.GetSpans(), "Spans recorded")
 		require.Nil(t, trace)
-		assert.EqualError(t, err, "trace not found")
+		require.EqualError(t, err, "trace not found")
 	})
 }
 
@@ -1262,7 +1286,7 @@ func TestConvertTraceIDsStringsToModels(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []model.TraceID{model.NewTraceID(0, 1), model.NewTraceID(0, 2)}, ids)
 	_, err = convertTraceIDsStringsToModels([]string{"1", "2", "01", "02", "001", "002", "blah"})
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestBuildTraceByIDQuery(t *testing.T) {
@@ -1297,4 +1321,30 @@ func TestBuildTraceByIDQuery(t *testing.T) {
 		q := buildTraceByIDQuery(test.traceID)
 		assert.Equal(t, test.query, q)
 	}
+}
+
+func TestTerminateAfterNotSet(t *testing.T) {
+	srcFn := getSourceFn(false, 99)
+	searchSource := srcFn(elastic.NewMatchAllQuery(), 1)
+	sp, err := searchSource.Source()
+	require.NoError(t, err)
+
+	searchParams, ok := sp.(map[string]any)
+	require.True(t, ok)
+
+	termAfter, ok := searchParams["terminate_after"]
+	require.False(t, ok)
+	assert.Nil(t, termAfter)
+
+	query, ok := searchParams["query"]
+	require.True(t, ok)
+
+	queryMap, ok := query.(map[string]any)
+	require.True(t, ok)
+	_, ok = queryMap["match_all"]
+	require.True(t, ok)
+
+	size, ok := searchParams["size"]
+	require.True(t, ok)
+	assert.Equal(t, 99, size)
 }

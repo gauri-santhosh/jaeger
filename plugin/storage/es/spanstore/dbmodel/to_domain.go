@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2018 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package dbmodel
 
@@ -37,12 +26,12 @@ type ToDomain struct {
 
 // ReplaceDot replaces dot with dotReplacement
 func (td ToDomain) ReplaceDot(k string) string {
-	return strings.Replace(k, ".", td.tagDotReplacement, -1)
+	return strings.ReplaceAll(k, ".", td.tagDotReplacement)
 }
 
 // ReplaceDotReplacement replaces dotReplacement with dot
 func (td ToDomain) ReplaceDotReplacement(k string) string {
-	return strings.Replace(k, td.tagDotReplacement, ".", -1)
+	return strings.ReplaceAll(k, td.tagDotReplacement, ".")
 }
 
 // SpanToDomain converts db span into model Span
@@ -102,7 +91,7 @@ func (td ToDomain) SpanToDomain(dbSpan *Span) (*model.Span, error) {
 	return span, nil
 }
 
-func (td ToDomain) convertRefs(refs []Reference) ([]model.SpanRef, error) {
+func (ToDomain) convertRefs(refs []Reference) ([]model.SpanRef, error) {
 	retMe := make([]model.SpanRef, len(refs))
 	for i, r := range refs {
 		// There are some inconsistencies with ReferenceTypes, hence the hacky fix.
@@ -147,7 +136,7 @@ func (td ToDomain) convertKeyValues(tags []KeyValue) ([]model.KeyValue, error) {
 	return retMe, nil
 }
 
-func (td ToDomain) convertTagFields(tagsMap map[string]interface{}) ([]model.KeyValue, error) {
+func (td ToDomain) convertTagFields(tagsMap map[string]any) ([]model.KeyValue, error) {
 	kvs := make([]model.KeyValue, len(tagsMap))
 	i := 0
 	for k, v := range tagsMap {
@@ -161,7 +150,7 @@ func (td ToDomain) convertTagFields(tagsMap map[string]interface{}) ([]model.Key
 	return kvs, nil
 }
 
-func (td ToDomain) convertTagField(k string, v interface{}) (model.KeyValue, error) {
+func (td ToDomain) convertTagField(k string, v any) (model.KeyValue, error) {
 	dKey := td.ReplaceDotReplacement(k)
 	switch val := v.(type) {
 	case int64:
@@ -194,7 +183,7 @@ func (td ToDomain) convertTagField(k string, v interface{}) (model.KeyValue, err
 
 // convertKeyValue expects the Value field to be string, because it only works
 // as a reverse transformation after FromDomain() for ElasticSearch model.
-func (td ToDomain) convertKeyValue(tag *KeyValue) (model.KeyValue, error) {
+func (ToDomain) convertKeyValue(tag *KeyValue) (model.KeyValue, error) {
 	if tag.Value == nil {
 		return model.KeyValue{}, fmt.Errorf("invalid nil Value in %v", tag)
 	}

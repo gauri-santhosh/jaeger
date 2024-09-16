@@ -1,0 +1,27 @@
+// Copyright (c) 2018 The Jaeger Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package env
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/jaegertracing/jaeger/pkg/testutils"
+)
+
+func TestCommand(t *testing.T) {
+	cmd := Command()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.Run(cmd, nil)
+	assert.True(t, strings.Contains(buf.String(), "METRICS_BACKEND"))
+	assert.True(t, strings.Contains(buf.String(), "SPAN_STORAGE"))
+}
+
+func TestMain(m *testing.M) {
+	testutils.VerifyGoLeaks(m)
+}

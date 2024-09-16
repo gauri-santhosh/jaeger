@@ -1,88 +1,61 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//go:build badger_storage_integration
-// +build badger_storage_integration
+// SPDX-License-Identifier: Apache-2.0
 
 package integration
 
 import (
+	"context"
 	"testing"
 
-	assert "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/jaegertracing/jaeger/pkg/metrics"
-	"github.com/jaegertracing/jaeger/pkg/testutils"
 	"github.com/jaegertracing/jaeger/plugin/storage/badger"
 )
 
 type BadgerIntegrationStorage struct {
 	StorageIntegration
-	logger  *zap.Logger
 	factory *badger.Factory
 }
 
-func (s *BadgerIntegrationStorage) initialize() error {
+func (s *BadgerIntegrationStorage) initialize(t *testing.T) {
 	s.factory = badger.NewFactory()
+	s.factory.Config.Ephemeral = false
 
-	err := s.factory.Initialize(metrics.NullFactory, zap.NewNop())
-	if err != nil {
-		return err
-	}
+	logger := zaptest.NewLogger(t, zaptest.WrapOptions(zap.AddCaller()))
+	err := s.factory.Initialize(metrics.NullFactory, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		s.factory.Close()
+	})
 
-	sw, err := s.factory.CreateSpanWriter()
-	if err != nil {
-		return err
-	}
-	sr, err := s.factory.CreateSpanReader()
-	if err != nil {
-		return err
-	}
+	s.SpanWriter, err = s.factory.CreateSpanWriter()
+	require.NoError(t, err)
 
-	s.SpanReader = sr
-	s.SpanWriter = sw
+	s.SpanReader, err = s.factory.CreateSpanReader()
+	require.NoError(t, err)
 
-	s.Refresh = s.refresh
-	s.CleanUp = s.cleanUp
-
-	logger, _ := testutils.NewLogger()
-	s.logger = logger
-
-	// TODO: remove this flag after badger support returning spanKind when get operations
-	s.NotSupportSpanKindWithOperation = true
-	return nil
+	s.SamplingStore, err = s.factory.CreateSamplingStore(0)
+	require.NoError(t, err)
 }
 
-func (s *BadgerIntegrationStorage) clear() error {
-	return s.factory.Close()
-}
-
-func (s *BadgerIntegrationStorage) cleanUp() error {
-	err := s.clear()
-	if err != nil {
-		return err
-	}
-	return s.initialize()
-}
-
-func (s *BadgerIntegrationStorage) refresh() error {
-	return nil
+func (s *BadgerIntegrationStorage) cleanUp(t *testing.T) {
+	require.NoError(t, s.factory.Purge(context.Background()))
 }
 
 func TestBadgerStorage(t *testing.T) {
-	s := &BadgerIntegrationStorage{}
-	assert.NoError(t, s.initialize())
-	s.IntegrationTestAll(t)
-	defer s.clear()
+	SkipUnlessEnv(t, "badger")
+	s := &BadgerIntegrationStorage{
+		StorageIntegration: StorageIntegration{
+			SkipArchiveTest: true,
+
+			// TODO: remove this badger supports returning spanKind from GetOperations
+			GetOperationsMissingSpanKind: true,
+		},
+	}
+	s.CleanUp = s.cleanUp
+	s.initialize(t)
+	s.RunAll(t)
 }

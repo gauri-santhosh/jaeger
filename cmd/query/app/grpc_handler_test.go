@@ -1,17 +1,6 @@
 // Copyright (c) 2019 The Jaeger Authors.
 // Copyright (c) 2019 Uber Technologies, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package app
 
@@ -23,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opentracing/opentracing-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -36,6 +24,7 @@ import (
 
 	"github.com/jaegertracing/jaeger/cmd/query/app/querysvc"
 	"github.com/jaegertracing/jaeger/model"
+	"github.com/jaegertracing/jaeger/pkg/jtracer"
 	"github.com/jaegertracing/jaeger/pkg/tenancy"
 	"github.com/jaegertracing/jaeger/plugin/metrics/disabled"
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2"
@@ -145,7 +134,7 @@ type grpcClient struct {
 	conn *grpc.ClientConn
 }
 
-func newGRPCServer(t *testing.T, q *querysvc.QueryService, mq querysvc.MetricsQueryService, logger *zap.Logger, tracer opentracing.Tracer, tenancyMgr *tenancy.Manager) (*grpc.Server, net.Addr) {
+func newGRPCServer(t *testing.T, q *querysvc.QueryService, mq querysvc.MetricsQueryService, logger *zap.Logger, tracer *jtracer.JTracer, tenancyMgr *tenancy.Manager) (*grpc.Server, net.Addr) {
 	lis, _ := net.Listen("tcp", ":0")
 	var grpcOpts []grpc.ServerOption
 	if tenancyMgr.Enabled {
@@ -155,30 +144,26 @@ func newGRPCServer(t *testing.T, q *querysvc.QueryService, mq querysvc.MetricsQu
 		)
 	}
 	grpcServer := grpc.NewServer(grpcOpts...)
-	grpcHandler := &GRPCHandler{
-		queryService:        q,
-		metricsQueryService: mq,
-		logger:              logger,
-		tracer:              tracer,
-		nowFn: func() time.Time {
+	grpcHandler := NewGRPCHandler(q, mq, GRPCHandlerOptions{
+		Logger: logger,
+		Tracer: tracer,
+		NowFn: func() time.Time {
 			return now
 		},
-	}
+	})
 	api_v2.RegisterQueryServiceServer(grpcServer, grpcHandler)
 	metrics.RegisterMetricsQueryServiceServer(grpcServer, grpcHandler)
 
 	go func() {
 		err := grpcServer.Serve(lis)
-		require.NoError(t, err)
+		assert.NoError(t, err)
 	}()
 
 	return grpcServer, lis.Addr()
 }
 
 func newGRPCClient(t *testing.T, addr string) *grpcClient {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 
 	return &grpcClient{
@@ -222,7 +207,7 @@ func TestGetTraceSuccessGRPC(t *testing.T) {
 
 		spanResChunk, _ := res.Recv()
 
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, spanResChunk.Spans[0].TraceID, mockTraceID)
 	})
 }
@@ -243,10 +228,10 @@ func TestGetTraceEmptyTraceIDFailure_GRPC(t *testing.T) {
 			TraceID: model.TraceID{},
 		})
 
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		spanResChunk, err := res.Recv()
-		assert.ErrorIs(t, err, errUninitializedTraceID)
+		require.ErrorIs(t, err, errUninitializedTraceID)
 		assert.Nil(t, spanResChunk)
 	})
 }
@@ -259,7 +244,7 @@ func TestGetTraceDBFailureGRPC(t *testing.T) {
 		res, err := client.GetTrace(context.Background(), &api_v2.GetTraceRequest{
 			TraceID: mockTraceID,
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		spanResChunk, err := res.Recv()
 		assertGRPCError(t, err, codes.Internal, "failed to fetch spans from the backend")
@@ -278,7 +263,7 @@ func TestGetTraceNotFoundGRPC(t *testing.T) {
 		res, err := client.GetTrace(context.Background(), &api_v2.GetTraceRequest{
 			TraceID: mockTraceID,
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		spanResChunk, err := res.Recv()
 		assertGRPCError(t, err, codes.NotFound, "trace not found")
 		assert.Nil(t, spanResChunk)
@@ -289,7 +274,7 @@ func TestGetTraceNotFoundGRPC(t *testing.T) {
 func TestGetTraceNilRequestOnHandlerGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
 	err := grpcHandler.GetTrace(nil, nil)
-	assert.EqualError(t, err, errNilRequest.Error())
+	require.EqualError(t, err, errNilRequest.Error())
 }
 
 func TestArchiveTraceSuccessGRPC(t *testing.T) {
@@ -303,7 +288,7 @@ func TestArchiveTraceSuccessGRPC(t *testing.T) {
 			TraceID: mockTraceID,
 		})
 
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 }
 
@@ -323,11 +308,11 @@ func TestArchiveTraceNotFoundGRPC(t *testing.T) {
 }
 
 func TestArchiveTraceEmptyTraceFailureGRPC(t *testing.T) {
-	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
+	withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
 		_, err := client.ArchiveTrace(context.Background(), &api_v2.ArchiveTraceRequest{
 			TraceID: model.TraceID{},
 		})
-		assert.ErrorIs(t, err, errUninitializedTraceID)
+		require.ErrorIs(t, err, errUninitializedTraceID)
 	})
 }
 
@@ -335,7 +320,7 @@ func TestArchiveTraceEmptyTraceFailureGRPC(t *testing.T) {
 func TestArchiveTraceNilRequestOnHandlerGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
 	_, err := grpcHandler.ArchiveTrace(context.Background(), nil)
-	assert.EqualError(t, err, errNilRequest.Error())
+	require.EqualError(t, err, errNilRequest.Error())
 }
 
 func TestArchiveTraceFailureGRPC(t *testing.T) {
@@ -370,7 +355,7 @@ func TestFindTracesSuccessGRPC(t *testing.T) {
 		})
 
 		spanResChunk, _ := res.Recv()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		spansArr := make([]model.Span, 0, len(mockTraceGRPC.Spans))
 		for _, span := range mockTraceGRPC.Spans {
@@ -395,27 +380,27 @@ func TestFindTracesSuccess_SpanStreamingGRPC(t *testing.T) {
 		res, err := client.FindTraces(context.Background(), &api_v2.FindTracesRequest{
 			Query: queryParams,
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		spanResChunk, err := res.Recv()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Len(t, spanResChunk.Spans, 10)
 
 		spanResChunk, err = res.Recv()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Len(t, spanResChunk.Spans, 1)
 	})
 }
 
 func TestFindTracesMissingQuery_GRPC(t *testing.T) {
-	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
+	withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
 		res, err := client.FindTraces(context.Background(), &api_v2.FindTracesRequest{
 			Query: nil,
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		spanResChunk, err := res.Recv()
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Nil(t, spanResChunk)
 	})
 }
@@ -438,10 +423,10 @@ func TestFindTracesFailure_GRPC(t *testing.T) {
 		res, err := client.FindTraces(context.Background(), &api_v2.FindTracesRequest{
 			Query: queryParams,
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		spanResChunk, err := res.Recv()
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Nil(t, spanResChunk)
 	})
 }
@@ -450,7 +435,7 @@ func TestFindTracesFailure_GRPC(t *testing.T) {
 func TestFindTracesNilRequestOnHandlerGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
 	err := grpcHandler.FindTraces(nil, nil)
-	assert.EqualError(t, err, errNilRequest.Error())
+	require.EqualError(t, err, errNilRequest.Error())
 }
 
 func TestGetServicesSuccessGRPC(t *testing.T) {
@@ -459,7 +444,7 @@ func TestGetServicesSuccessGRPC(t *testing.T) {
 		server.spanReader.On("GetServices", mock.AnythingOfType("*context.valueCtx")).Return(expectedServices, nil).Once()
 
 		res, err := client.GetServices(context.Background(), &api_v2.GetServicesRequest{})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		actualServices := res.Services
 		assert.Equal(t, expectedServices, actualServices)
 	})
@@ -490,7 +475,7 @@ func TestGetOperationsSuccessGRPC(t *testing.T) {
 		res, err := client.GetOperations(context.Background(), &api_v2.GetOperationsRequest{
 			Service: "abc/trifle",
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, len(expectedOperations), len(res.Operations))
 		for i, actualOp := range res.Operations {
 			assert.Equal(t, expectedOperations[i].Name, actualOp.Name)
@@ -519,21 +504,24 @@ func TestGetOperationsFailureGRPC(t *testing.T) {
 func TestGetOperationsNilRequestOnHandlerGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
 	_, err := grpcHandler.GetOperations(context.Background(), nil)
-	assert.EqualError(t, err, errNilRequest.Error())
+	require.EqualError(t, err, errNilRequest.Error())
 }
 
 func TestGetDependenciesSuccessGRPC(t *testing.T) {
 	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
 		expectedDependencies := []model.DependencyLink{{Parent: "killer", Child: "queen", CallCount: 12}}
 		endTs := time.Now().UTC()
-		server.depReader.On("GetDependencies", endTs.Add(time.Duration(-1)*defaultDependencyLookbackDuration), defaultDependencyLookbackDuration).
-			Return(expectedDependencies, nil).Times(1)
+		server.depReader.On("GetDependencies",
+			mock.Anything, // context.Context
+			endTs.Add(time.Duration(-1)*defaultDependencyLookbackDuration),
+			defaultDependencyLookbackDuration,
+		).Return(expectedDependencies, nil).Times(1)
 
 		res, err := client.GetDependencies(context.Background(), &api_v2.GetDependenciesRequest{
 			StartTime: endTs.Add(time.Duration(-1) * defaultDependencyLookbackDuration),
 			EndTime:   endTs,
 		})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, expectedDependencies, res.Dependencies)
 	})
 }
@@ -541,8 +529,11 @@ func TestGetDependenciesSuccessGRPC(t *testing.T) {
 func TestGetDependenciesFailureGRPC(t *testing.T) {
 	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
 		endTs := time.Now().UTC()
-		server.depReader.On("GetDependencies", endTs.Add(time.Duration(-1)*defaultDependencyLookbackDuration), defaultDependencyLookbackDuration).
-			Return(nil, errStorageGRPC).Times(1)
+		server.depReader.On(
+			"GetDependencies",
+			mock.Anything, // context.Context
+			endTs.Add(time.Duration(-1)*defaultDependencyLookbackDuration),
+			defaultDependencyLookbackDuration).Return(nil, errStorageGRPC).Times(1)
 
 		_, err := client.GetDependencies(context.Background(), &api_v2.GetDependenciesRequest{
 			StartTime: endTs.Add(time.Duration(-1) * defaultDependencyLookbackDuration),
@@ -564,13 +555,13 @@ func TestGetDependenciesFailureUninitializedTimeGRPC(t *testing.T) {
 	}
 
 	for _, input := range timeInputs {
-		withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
+		withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
 			_, err := client.GetDependencies(context.Background(), &api_v2.GetDependenciesRequest{
 				StartTime: input.startTime,
 				EndTime:   input.endTime,
 			})
 
-			assert.Error(t, err)
+			require.Error(t, err)
 		})
 	}
 }
@@ -579,7 +570,7 @@ func TestGetDependenciesFailureUninitializedTimeGRPC(t *testing.T) {
 func TestGetDependenciesNilRequestOnHandlerGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
 	_, err := grpcHandler.GetDependencies(context.Background(), nil)
-	assert.EqualError(t, err, errNilRequest.Error())
+	require.EqualError(t, err, errNilRequest.Error())
 }
 
 func TestSendSpanChunksError(t *testing.T) {
@@ -594,7 +585,7 @@ func TestSendSpanChunksError(t *testing.T) {
 	}, func(*api_v2.SpansResponseChunk) error {
 		return expectedErr
 	})
-	assert.EqualError(t, err, expectedErr.Error())
+	require.EqualError(t, err, expectedErr.Error())
 }
 
 func TestGetMetricsSuccessGRPC(t *testing.T) {
@@ -644,7 +635,7 @@ func TestGetMetricsSuccessGRPC(t *testing.T) {
 }
 
 func TestGetMetricsReaderDisabledGRPC(t *testing.T) {
-	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
+	withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
 		baseQueryParam := &metrics.MetricsQueryBaseRequest{
 			ServiceNames: []string{"foo"},
 		}
@@ -898,7 +889,7 @@ func TestMetricsQueryNilRequestGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
 	bqp, err := grpcHandler.newBaseQueryParameters(nil)
 	assert.Empty(t, bqp)
-	assert.EqualError(t, err, errNilRequest.Error())
+	require.EqualError(t, err, errNilRequest.Error())
 }
 
 func initializeTenantedTestServerGRPCWithOptions(t *testing.T, tm *tenancy.Manager, options ...testOption) *grpcServer {
@@ -927,7 +918,7 @@ func initializeTenantedTestServerGRPCWithOptions(t *testing.T, tm *tenancy.Manag
 	}
 
 	logger := zap.NewNop()
-	tracer := opentracing.NoopTracer{}
+	tracer := jtracer.NoOp()
 
 	server, addr := newGRPCServer(t, q, tqs.metricsQueryService, logger, tracer, tm)
 
@@ -952,6 +943,7 @@ func withTenantedServerAndClient(t *testing.T, tm *tenancy.Manager, actualTest f
 }
 
 // withOutgoingMetadata returns a Context with metadata for a server to receive
+// revive:disable-next-line context-as-argument
 func withOutgoingMetadata(t *testing.T, ctx context.Context, headerName, headerValue string) context.Context {
 	t.Helper()
 
@@ -975,7 +967,7 @@ func TestSearchTenancyGRPC(t *testing.T) {
 		require.NoError(t, err, "could not initiate GetTraceRequest")
 
 		spanResChunk, err := res.Recv()
-		assertGRPCError(t, err, codes.PermissionDenied, "missing tenant header")
+		assertGRPCError(t, err, codes.Unauthenticated, "missing tenant header")
 		assert.Nil(t, spanResChunk)
 
 		// Next try with tenancy
@@ -1005,7 +997,7 @@ func TestServicesTenancyGRPC(t *testing.T) {
 
 		// First try without tenancy header
 		_, err := client.GetServices(context.Background(), &api_v2.GetServicesRequest{})
-		assertGRPCError(t, err, codes.PermissionDenied, "missing tenant header")
+		assertGRPCError(t, err, codes.Unauthenticated, "missing tenant header")
 
 		// Next try with tenancy
 		res, err := client.GetServices(withOutgoingMetadata(t, context.Background(), tm.Header, "acme"), &api_v2.GetServicesRequest{})
@@ -1035,7 +1027,7 @@ func TestSearchTenancyGRPCExplicitList(t *testing.T) {
 			{
 				name:           "no header",
 				wantErr:        true,
-				failureCode:    codes.PermissionDenied,
+				failureCode:    codes.Unauthenticated,
 				failureMessage: "missing tenant header",
 			},
 			{
@@ -1043,7 +1035,7 @@ func TestSearchTenancyGRPCExplicitList(t *testing.T) {
 				tenancyHeader:  "not-the-correct-header",
 				tenant:         "mercury",
 				wantErr:        true,
-				failureCode:    codes.PermissionDenied,
+				failureCode:    codes.Unauthenticated,
 				failureMessage: "missing tenant header",
 			},
 			{
@@ -1112,7 +1104,7 @@ func TestTenancyContextFlowGRPC(t *testing.T) {
 		}
 
 		addTenantedGetServices := func(mockReader *spanstoremocks.Reader, tenant string, expectedServices []string) {
-			mockReader.On("GetServices", mock.MatchedBy(func(v interface{}) bool {
+			mockReader.On("GetServices", mock.MatchedBy(func(v any) bool {
 				ctx, ok := v.(context.Context)
 				if !ok {
 					return false
@@ -1124,7 +1116,7 @@ func TestTenancyContextFlowGRPC(t *testing.T) {
 			})).Return(expectedServices, nil).Once()
 		}
 		addTenantedGetTrace := func(mockReader *spanstoremocks.Reader, tenant string, trace *model.Trace, err error) {
-			mockReader.On("GetTrace", mock.MatchedBy(func(v interface{}) bool {
+			mockReader.On("GetTrace", mock.MatchedBy(func(v any) bool {
 				ctx, ok := v.(context.Context)
 				if !ok {
 					return false
@@ -1167,4 +1159,20 @@ func TestTenancyContextFlowGRPC(t *testing.T) {
 
 		server.spanReader.AssertExpectations(t)
 	})
+}
+
+func TestNewGRPCHandlerWithEmptyOptions(t *testing.T) {
+	disabledReader, err := disabled.NewMetricsReader()
+	require.NoError(t, err)
+
+	q := querysvc.NewQueryService(
+		&spanstoremocks.Reader{},
+		&depsmocks.Reader{},
+		querysvc.QueryServiceOptions{})
+
+	handler := NewGRPCHandler(q, disabledReader, GRPCHandlerOptions{})
+
+	assert.NotNil(t, handler.logger)
+	assert.NotNil(t, handler.tracer)
+	assert.NotNil(t, handler.nowFn)
 }

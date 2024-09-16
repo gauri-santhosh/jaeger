@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package renderer
 
@@ -21,9 +10,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/cmd/esmapping-generator/app"
 	"github.com/jaegertracing/jaeger/pkg/es/mocks"
+	"github.com/jaegertracing/jaeger/pkg/testutils"
 )
 
 func TestIsValidOption(t *testing.T) {
@@ -55,14 +46,6 @@ func Test_getMappingAsString(t *testing.T) {
 			want: "ES version 7",
 		},
 		{
-			name: "ES version 6", args: app.Options{Mapping: "jaeger-span", EsVersion: 6, Shards: 5, Replicas: 1, IndexPrefix: "test", UseILM: "false", ILMPolicyName: "jaeger-test-policy"},
-			want: "ES version 6",
-		},
-		{
-			name: "Parse Error version 6", args: app.Options{Mapping: "jaeger-span", EsVersion: 6, Shards: 5, Replicas: 1, IndexPrefix: "test", UseILM: "false", ILMPolicyName: "jaeger-test-policy"},
-			wantErr: errors.New("parse error"),
-		},
-		{
 			name: "Parse Error version 7", args: app.Options{Mapping: "jaeger-span", EsVersion: 7, Shards: 5, Replicas: 1, IndexPrefix: "test", UseILM: "true", ILMPolicyName: "jaeger-test-policy"},
 			wantErr: errors.New("parse error"),
 		},
@@ -76,7 +59,7 @@ func Test_getMappingAsString(t *testing.T) {
 			// Prepare
 			mockTemplateApplier := &mocks.TemplateApplier{}
 			mockTemplateApplier.On("Execute", mock.Anything, mock.Anything).Return(
-				func(wr io.Writer, data interface{}) error {
+				func(wr io.Writer, data any) error {
 					wr.Write([]byte(tt.want))
 					return nil
 				},
@@ -89,11 +72,15 @@ func Test_getMappingAsString(t *testing.T) {
 
 			// Validate
 			if tt.wantErr != nil {
-				assert.EqualError(t, err, tt.wantErr.Error())
+				require.EqualError(t, err, tt.wantErr.Error())
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestMain(m *testing.M) {
+	testutils.VerifyGoLeaks(m)
 }

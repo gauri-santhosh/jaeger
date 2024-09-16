@@ -1,0 +1,67 @@
+name: Build all-in-one
+
+on:
+  push:
+    branches: [main]
+
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ (github.event.pull_request && github.event.pull_request.number) || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+# See https://github.com/ossf/scorecard/blob/main/docs/checks.md#token-permissions
+permissions:
+  contents: read
+
+jobs:
+  all-in-one:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        jaeger_version: [v1, v2]
+
+    steps:
+    - uses: step-security/harden-runner@0d381219ddf674d61a7572ddd19d7941e271515c # v2.9.0
+      with:
+        egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
+
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      with:
+        submodules: true
+
+    - name: Fetch git tags
+      run: git fetch --prune --unshallow --tags
+
+    - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+      with:
+        go-version: 1.23.x
+
+    - uses: ./.github/actions/setup-node.js
+
+    - uses: ./.github/actions/setup-branch
+
+    - run: make install-ci
+
+    - uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+
+    - name: Define BUILD_FLAGS var if running on a Pull Request
+      run: |
+        case ${GITHUB_EVENT_NAME} in
+          pull_request)
+            echo "BUILD_FLAGS=-l -D -p linux/$(go env GOARCH)" >> ${GITHUB_ENV}
+            ;;
+          *)
+            echo "BUILD_FLAGS=" >> ${GITHUB_ENV}
+            ;;
+        esac
+
+    - name: Build, test, and publish all-in-one image
+      run: |
+        bash scripts/build-all-in-one-image.sh \
+          ${{ env.BUILD_FLAGS }} \
+          "${{ matrix.jaeger_version }}"
+      env:
+        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}

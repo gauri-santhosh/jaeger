@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package kafka
 
@@ -19,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/model/converter/thrift/zipkin"
 	"github.com/jaegertracing/jaeger/thrift-gen/zipkincore"
@@ -35,12 +25,12 @@ func TestJSONMarshallerAndUnmarshaller(t *testing.T) {
 func testMarshallerAndUnmarshaller(t *testing.T, marshaller Marshaller, unmarshaller Unmarshaller) {
 	bytes, err := marshaller.Marshal(sampleSpan)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, bytes)
 
 	resultSpan, err := unmarshaller.Unmarshal(bytes)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, sampleSpan, resultSpan)
 }
 
@@ -58,7 +48,7 @@ func TestZipkinThriftUnmarshaller(t *testing.T) {
 	unmarshaller := NewZipkinThriftUnmarshaller()
 	resultSpan, err := unmarshaller.Unmarshal(bytes)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, operationName, resultSpan.OperationName)
 }
 
@@ -71,12 +61,12 @@ func TestZipkinThriftUnmarshallerErrorNoService(t *testing.T) {
 	})
 	unmarshaller := NewZipkinThriftUnmarshaller()
 	_, err := unmarshaller.Unmarshal(bytes)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestZipkinThriftUnmarshallerErrorCorrupted(t *testing.T) {
 	bytes := []byte("foo")
 	unmarshaller := NewZipkinThriftUnmarshaller()
 	_, err := unmarshaller.Unmarshal(bytes)
-	assert.Error(t, err)
+	require.Error(t, err)
 }

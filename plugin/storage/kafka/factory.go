@@ -1,16 +1,5 @@
 // Copyright (c) 2018 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package kafka
 
@@ -26,11 +15,13 @@ import (
 	"github.com/jaegertracing/jaeger/pkg/kafka/producer"
 	"github.com/jaegertracing/jaeger/pkg/metrics"
 	"github.com/jaegertracing/jaeger/plugin"
+	"github.com/jaegertracing/jaeger/storage"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 )
 
-var (
+var ( // interface comformance checks
+	_ storage.Factory     = (*Factory)(nil)
 	_ io.Closer           = (*Factory)(nil)
 	_ plugin.Configurable = (*Factory)(nil)
 )
@@ -58,13 +49,13 @@ func (f *Factory) AddFlags(flagSet *flag.FlagSet) {
 }
 
 // InitFromViper implements plugin.Configurable
-func (f *Factory) InitFromViper(v *viper.Viper, logger *zap.Logger) {
+func (f *Factory) InitFromViper(v *viper.Viper, _ *zap.Logger) {
 	f.options.InitFromViper(v)
-	f.Builder = &f.options.Config
+	f.configureFromOptions(f.options)
 }
 
-// InitFromOptions initializes factory from options.
-func (f *Factory) InitFromOptions(o Options) {
+// configureFromOptions initializes factory from options.
+func (f *Factory) configureFromOptions(o Options) {
 	f.options = o
 	f.Builder = &f.options.Config
 }
@@ -75,11 +66,6 @@ func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger)
 	logger.Info("Kafka factory",
 		zap.Any("producer builder", f.Builder),
 		zap.Any("topic", f.options.Topic))
-	p, err := f.NewProducer(logger)
-	if err != nil {
-		return err
-	}
-	f.producer = p
 	switch f.options.Encoding {
 	case EncodingProto:
 		f.marshaller = newProtobufMarshaller()
@@ -88,11 +74,16 @@ func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger)
 	default:
 		return errors.New("kafka encoding is not one of '" + EncodingJSON + "' or '" + EncodingProto + "'")
 	}
+	p, err := f.NewProducer(logger)
+	if err != nil {
+		return err
+	}
+	f.producer = p
 	return nil
 }
 
 // CreateSpanReader implements storage.Factory
-func (f *Factory) CreateSpanReader() (spanstore.Reader, error) {
+func (*Factory) CreateSpanReader() (spanstore.Reader, error) {
 	return nil, errors.New("kafka storage is write-only")
 }
 
@@ -102,7 +93,7 @@ func (f *Factory) CreateSpanWriter() (spanstore.Writer, error) {
 }
 
 // CreateDependencyReader implements storage.Factory
-func (f *Factory) CreateDependencyReader() (dependencystore.Reader, error) {
+func (*Factory) CreateDependencyReader() (dependencystore.Reader, error) {
 	return nil, errors.New("kafka storage is write-only")
 }
 
@@ -110,5 +101,10 @@ var _ io.Closer = (*Factory)(nil)
 
 // Close closes the resources held by the factory
 func (f *Factory) Close() error {
-	return f.options.Config.TLS.Close()
+	var errs []error
+	if f.producer != nil {
+		errs = append(errs, f.producer.Close())
+	}
+	errs = append(errs, f.options.Config.TLS.Close())
+	return errors.Join(errs...)
 }

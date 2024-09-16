@@ -1,16 +1,5 @@
 // Copyright (c) 2020 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package server
 
@@ -39,13 +28,13 @@ import (
 func TestFailToListen(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	server, err := StartGRPCServer(&GRPCServerParams{
-		HostPort:      ":-1",
-		Handler:       handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
-		SamplingStore: &mockSamplingStore{},
-		Logger:        logger,
+		HostPort:         ":-1",
+		Handler:          handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
+		SamplingProvider: &mockSamplingProvider{},
+		Logger:           logger,
 	})
 	assert.Nil(t, server)
-	assert.EqualError(t, err, "failed to listen on gRPC port: listen tcp: address -1: invalid port")
+	require.EqualError(t, err, "failed to listen on gRPC port: listen tcp: address -1: invalid port")
 }
 
 func TestFailServe(t *testing.T) {
@@ -56,12 +45,14 @@ func TestFailServe(t *testing.T) {
 	wg.Add(1)
 
 	logger := zap.New(core)
-	serveGRPC(grpc.NewServer(), lis, &GRPCServerParams{
-		Handler:       handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
-		SamplingStore: &mockSamplingStore{},
-		Logger:        logger,
-		OnError: func(e error) {
-			assert.Equal(t, 1, len(logs.All()))
+	server := grpc.NewServer()
+	defer server.Stop()
+	serveGRPC(server, lis, &GRPCServerParams{
+		Handler:          handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
+		SamplingProvider: &mockSamplingProvider{},
+		Logger:           logger,
+		OnError: func(_ error) {
+			assert.Len(t, logs.All(), 1)
 			assert.Equal(t, "Could not launch gRPC service", logs.All()[0].Message)
 			wg.Done()
 		},
@@ -73,7 +64,7 @@ func TestSpanCollector(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	params := &GRPCServerParams{
 		Handler:                 handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
-		SamplingStore:           &mockSamplingStore{},
+		SamplingProvider:        &mockSamplingProvider{},
 		Logger:                  logger,
 		MaxReceiveMessageLength: 1024 * 1024,
 	}
@@ -82,7 +73,7 @@ func TestSpanCollector(t *testing.T) {
 	require.NoError(t, err)
 	defer server.Stop()
 
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		params.HostPortActual,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
@@ -97,9 +88,9 @@ func TestSpanCollector(t *testing.T) {
 func TestCollectorStartWithTLS(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	params := &GRPCServerParams{
-		Handler:       handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
-		SamplingStore: &mockSamplingStore{},
-		Logger:        logger,
+		Handler:          handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
+		SamplingProvider: &mockSamplingProvider{},
+		Logger:           logger,
 		TLSConfig: tlscfg.Options{
 			Enabled:      true,
 			CertPath:     testCertKeyLocation + "/example-server-cert.pem",
@@ -107,18 +98,18 @@ func TestCollectorStartWithTLS(t *testing.T) {
 			ClientCAPath: testCertKeyLocation + "/example-CA-cert.pem",
 		},
 	}
-
 	server, err := StartGRPCServer(params)
 	require.NoError(t, err)
 	defer server.Stop()
+	defer params.TLSConfig.Close()
 }
 
 func TestCollectorReflection(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	params := &GRPCServerParams{
-		Handler:       handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
-		SamplingStore: &mockSamplingStore{},
-		Logger:        logger,
+		Handler:          handler.NewGRPCHandler(logger, &mockSpanProcessor{}, &tenancy.Manager{}),
+		SamplingProvider: &mockSamplingProvider{},
+		Logger:           logger,
 	}
 
 	server, err := StartGRPCServer(params)
@@ -127,7 +118,6 @@ func TestCollectorReflection(t *testing.T) {
 
 	grpctest.ReflectionServiceValidator{
 		HostPort: params.HostPortActual,
-		Server:   server,
 		ExpectedServices: []string{
 			"jaeger.api_v2.CollectorService",
 			"jaeger.api_v2.SamplingManager",

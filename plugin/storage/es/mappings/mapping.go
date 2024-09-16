@@ -1,16 +1,5 @@
 // Copyright (c) 2021 The Jaeger Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package mappings
 
@@ -29,30 +18,36 @@ var MAPPINGS embed.FS
 
 // MappingBuilder holds parameters required to render an elasticsearch index template
 type MappingBuilder struct {
-	TemplateBuilder es.TemplateBuilder
-	Shards          int64
-	Replicas        int64
-	EsVersion       uint
-	IndexPrefix     string
-	UseILM          bool
-	ILMPolicyName   string
+	TemplateBuilder              es.TemplateBuilder
+	Shards                       int64
+	Replicas                     int64
+	PrioritySpanTemplate         int64
+	PriorityServiceTemplate      int64
+	PriorityDependenciesTemplate int64
+	PrioritySamplingTemplate     int64
+	EsVersion                    uint
+	IndexPrefix                  string
+	UseILM                       bool
+	ILMPolicyName                string
 }
 
 // GetMapping returns the rendered mapping based on elasticsearch version
 func (mb *MappingBuilder) GetMapping(mapping string) (string, error) {
-	if mb.EsVersion == 7 {
+	if mb.EsVersion == 8 {
+		return mb.fixMapping(mapping + "-8.json")
+	} else if mb.EsVersion == 7 {
 		return mb.fixMapping(mapping + "-7.json")
 	}
-	return mb.fixMapping(mapping + ".json")
+	return mb.fixMapping(mapping + "-6.json")
 }
 
 // GetSpanServiceMappings returns span and service mappings
-func (mb *MappingBuilder) GetSpanServiceMappings() (string, string, error) {
-	spanMapping, err := mb.GetMapping("jaeger-span")
+func (mb *MappingBuilder) GetSpanServiceMappings() (spanMapping string, serviceMapping string, err error) {
+	spanMapping, err = mb.GetMapping("jaeger-span")
 	if err != nil {
 		return "", "", err
 	}
-	serviceMapping, err := mb.GetMapping("jaeger-service")
+	serviceMapping, err = mb.GetMapping("jaeger-service")
 	if err != nil {
 		return "", "", err
 	}
@@ -62,6 +57,11 @@ func (mb *MappingBuilder) GetSpanServiceMappings() (string, string, error) {
 // GetDependenciesMappings returns dependencies mappings
 func (mb *MappingBuilder) GetDependenciesMappings() (string, error) {
 	return mb.GetMapping("jaeger-dependencies")
+}
+
+// GetSamplingMappings returns sampling mappings
+func (mb *MappingBuilder) GetSamplingMappings() (string, error) {
+	return mb.GetMapping("jaeger-sampling")
 }
 
 func loadMapping(name string) string {
